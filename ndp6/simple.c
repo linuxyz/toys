@@ -119,7 +119,12 @@ int get_rx(int socklan, unsigned char *msg)
     }
     sprintf(ipstr+idx, "%x", ntohs(saddr.sin6_addr.s6_addr16[7]));
     LOG("ICMPv6 from %s type:%d code:%d", ipstr, msg[0], msg[1]);
-
+    /* Add to neigh proxy */
+    if (msg[0] == ND_NEIGHBOR_SOLICIT) {
+        int rtn;
+        rtn = execl("/usr/sbin/ip", "-6", "neigh", "add", "proxy", ipstr, "dev", "eth1");
+        LOG("add neigh proxy return: %d", rtn);
+    }
 
     return len;
 }
