@@ -20,18 +20,14 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+
 #include <netinet/in.h>
 #include <netinet/ip6.h>
 #include <netinet/icmp6.h>
 #include <linux/if_packet.h>
-#include <linux/if_ether.h>
-#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 
-//#define LOG_ERR			stderr
-//#define LOG_DEBUG		stderr
-//#define LOG	fprintf
-//#define LOG(...)        fprintf(stderr, __VA_ARGS__)
-#define LOG(fmt, ...)        fprintf(stderr, fmt "\n", ##__VA_ARGS__)
+#define LOG(fmt, ...)       fprintf(stderr, fmt "\n", ##__VA_ARGS__)
 
 #define HWADDR_MAX          16
 #define MAX_PKT_BUFF        1500
@@ -39,12 +35,239 @@
 #define INTERFACE_STRLEN    12
 #define DISPATCH_TIMEOUT    300000          // milliseconds 300000 = 5 mins
 
-int open_icmp_socket(const char* lan)
+struct rtnl_handle
+{
+	int			nlfd;
+	struct sockaddr_nl	local;
+	struct sockaddr_nl	peer;
+	__u32		seq;
+	__u32		dump;
+    int         icmp6fd;
+	int 		if_wan;
+	int			if_lan;
+} rth = { .nlfd = -1, .icmp6fd = -1, .if_wan = -1, .if_lan = -1 };
+
+static int rtnl_talk(struct rtnl_handle *rtnl, 
+			struct nlmsghdr *n, struct nlmsghdr *answer)
+{
+	int status;
+	unsigned seq;
+	struct nlmsghdr *h;
+	struct sockaddr_nl nladdr;
+	struct iovec iov = {
+		.iov_base = (void*) n,
+		.iov_len = n->nlmsg_len
+	};
+	struct msghdr msg = {
+		.msg_name = &nladdr,
+		.msg_namelen = sizeof(nladdr),
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+	};
+	char   buf[4096];
+
+	memset(&nladdr, 0, sizeof(nladdr));
+	nladdr.nl_family = AF_NETLINK;
+	nladdr.nl_pid = 0;
+	nladdr.nl_groups = 0;
+
+	n->nlmsg_seq = seq = ++rtnl->seq;
+
+	if (answer == NULL)
+		n->nlmsg_flags |= NLM_F_ACK;
+
+	/*msg here*/
+	status = sendmsg(rtnl->nlfd, &msg, 0);
+	if (status < 0) {
+		perror("Cannot talk to rtnetlink");
+		return -1;
+	}
+
+	memset(buf,0,sizeof(buf));
+	iov.iov_base = buf;
+
+	while (1) {
+		iov.iov_len = sizeof(buf);
+		status = recvmsg(rtnl->nlfd, &msg, 0);
+        LOG("NETLINK recvmsg %d length:%d", status, msg.msg_namelen);
+
+		if (status < 0) {
+			if (errno == EINTR || errno == EAGAIN)
+				continue;
+
+			perror("netlink receive error");
+			return -1;
+		}
+		if (status == 0) {
+			perror("EOF on netlink");
+			return -1;
+		}
+		if (msg.msg_namelen != sizeof(nladdr)) {
+			LOG("sender address length == %d", msg.msg_namelen);
+			return -2;
+		}
+
+        // There is only one request, 
+		for (h = (struct nlmsghdr*)buf; status >= sizeof(*h); ) {
+			int len = h->nlmsg_len;
+			int l = len - sizeof(*h);
+
+			if (l < 0 || len>status) {
+				if (msg.msg_flags & MSG_TRUNC) {
+					LOG("Truncated message");
+					return -1;
+				}
+				LOG("!!!malformed message: len=%d", len);
+				return -3;
+			}
+
+			if (nladdr.nl_pid != 0 ||
+			    h->nlmsg_pid != 0 ||
+			    h->nlmsg_seq != seq) {
+				/* Don't forget to skip that message. */
+				status -= NLMSG_ALIGN(len);
+				h = (struct nlmsghdr*)((char*)h + NLMSG_ALIGN(len));
+				continue;
+			}
+
+			if (h->nlmsg_type == NLMSG_ERROR) {
+				struct nlmsgerr *err = (struct nlmsgerr*)NLMSG_DATA(h);
+				if (l < sizeof(struct nlmsgerr)) {
+					LOG("ERROR truncated");
+				} else {
+					errno = -err->error;
+					if (errno == 0) {
+						if (answer)
+							memcpy(answer, h, h->nlmsg_len);
+						return 0;
+					}
+					perror("RTNETLINK answers");
+				}
+				return -1;
+			}
+
+			if (answer) {
+				memcpy(answer, h, h->nlmsg_len);
+				return 0;
+			}
+
+			//LOG("Unexpected reply!!!");
+			status -= NLMSG_ALIGN(len);
+			h = (struct nlmsghdr*)((char*)h + NLMSG_ALIGN(len));
+		}
+		if (msg.msg_flags & MSG_TRUNC) {
+			LOG("Message truncated\n");
+			continue;
+		}
+		if (status) {
+			LOG("!!!Remnant of size %d\n", status);
+		}
+        break;
+	}
+    return 0;
+}
+
+
+#define NLMSG_TAIL(nmsg) \
+	((struct rtattr *) (((void *) (nmsg)) + RTA_ALIGN((nmsg)->nlmsg_len)))
+
+
+static int neighor_addproxy(struct sockaddr_in6* ip6)
+{
+	struct {
+		struct nlmsghdr 	n;
+		struct ndmsg 		ndm;
+		char   			buf[256];
+	} req;
+	struct rtattr *rta;
+	int len;
+	
+	memset(&req, 0, sizeof(req));
+
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ndmsg));
+	req.n.nlmsg_type = RTM_NEWNEIGH;
+	req.n.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE|NLM_F_EXCL;
+	req.n.nlmsg_pid = 0;
+	req.ndm.ndm_family = AF_INET6;
+	req.ndm.ndm_ifindex = rth.if_wan;
+	req.ndm.ndm_state = NUD_PERMANENT;
+	req.ndm.ndm_flags = NTF_PROXY;
+
+	// Adope the IPv6 address into the payload
+    len = RTA_LENGTH(16);
+	if (NLMSG_ALIGN(req.n.nlmsg_len) + RTA_ALIGN(len) > sizeof(req)) {
+		LOG("ERROR: message exceeded bound of %d\n", sizeof(req));
+		return -1;
+	}
+	rta = NLMSG_TAIL(&(req.n));
+	rta->rta_len = len;
+	rta->rta_type = NDA_DST;
+	memcpy(RTA_DATA(rta), ip6->sin6_addr.s6_addr, 16);
+	req.n.nlmsg_len = NLMSG_ALIGN(req.n.nlmsg_len) + RTA_ALIGN(len);
+	
+	// Netlink talk
+	if (rtnl_talk(&rth, &req.n, 0) < 0) {
+		LOG("RTNETLINK: Error!");
+	}
+
+	return 0;
+}
+
+static int open_netlink_socket(struct rtnl_handle *rth, unsigned subscriptions, int protocol)
+{
+	socklen_t addr_len;
+	int iobuf = 4096;
+
+	memset(rth, 0, sizeof(*rth));
+
+	rth->nlfd = socket(AF_NETLINK, SOCK_RAW, protocol);
+	if (rth->nlfd < 0) {
+		perror("Cannot open netlink socket");
+		return -1;
+	}
+
+	if (setsockopt(rth->nlfd,SOL_SOCKET,SO_SNDBUF,&iobuf,sizeof(iobuf)) < 0) {
+		perror("SO_SNDBUF");
+		return -1;
+	}
+
+	if (setsockopt(rth->nlfd,SOL_SOCKET,SO_RCVBUF,&iobuf,sizeof(iobuf)) < 0) {
+		perror("SO_RCVBUF");
+		return -1;
+	}
+
+	memset(&rth->local, 0, sizeof(rth->local));
+	rth->local.nl_family = AF_NETLINK;
+	rth->local.nl_groups = subscriptions;
+
+	if (bind(rth->nlfd, (struct sockaddr*)&rth->local, sizeof(rth->local)) < 0) {
+		perror("Cannot bind netlink socket");
+		return -1;
+	}
+	addr_len = sizeof(rth->local);
+	if (getsockname(rth->nlfd, (struct sockaddr*)&rth->local, &addr_len) < 0) {
+		perror("Cannot getsockname");
+		return -1;
+	}
+	if (addr_len != sizeof(rth->local)) {
+		LOG("Wrong address length %d\n", addr_len);
+		return -1;
+	}
+	if (rth->local.nl_family != AF_NETLINK) {
+		LOG("Wrong address family %d\n", rth->local.nl_family);
+		return -1;
+	}
+	rth->seq = 31415; // time(NULL);
+	return 0;
+}
+
+
+static int open_icmp_socket(struct rtnl_handle* rth)
 {
     int sock, err, optval;
     //struct sockaddr_ll lladdr;
     struct sockaddr_in6 in6addr;
-
+	
     sock = socket(PF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
     if (sock < 0)
     {
@@ -56,34 +279,30 @@ int open_icmp_socket(const char* lan)
     // Bind the socket to the interface we're interested in
     memset(&in6addr, 0, sizeof(in6addr));
     in6addr.sin6_family = AF_INET6;
-    in6addr.sin6_scope_id = if_nametoindex(lan);
+    in6addr.sin6_scope_id = rth->if_lan; //if_nametoindex(lan);
     err=bind(sock, (struct sockaddr *)&in6addr, sizeof(in6addr));
     if (err < 0)
     {
         LOG("packet socket bind return %d failed: %s", err, strerror(errno));
         return (-1);
     }    
-    LOG("packet socket bind to interface %d OK", if_nametoindex(lan));
+    LOG("packet socket bind to interface %d OK", rth->if_lan); //if_nametoindex(lan));
     
 	optval = 1;
-#ifdef IPV6_RECVPKTINFO
 	if (setsockopt(sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &optval, sizeof(optval)) < 0)
 		LOG("Error! setsockopt(IPV6_RECVPKTINFO)"); /* XXX err? */
-#else  /* old adv. API */
-	if (setsockopt(sock, IPPROTO_IPV6, IPV6_PKTINFO, &optval, sizeof(optval)) < 0)
-		LOG("Error! setsockopt(IPV6_PKTINFO)"); /* XXX err? */
-#endif
+
+    rth->icmp6fd = sock;
 
     return sock;
 }
 
-
-int get_rx(int socklan, unsigned char *msg) 
+int get_icmp6(int socklan, unsigned char *msg) 
 {
     struct sockaddr_in6 saddr;
     struct msghdr mhdr;
     struct iovec iov;
-    int len, idx, pos;
+    int len; //, idx, pos;
 	char ipstr[64];
 
     iov.iov_len = MAX_MSG_SIZE;
@@ -113,21 +332,35 @@ int get_rx(int socklan, unsigned char *msg)
         return -1;
     }
 
-    /* print address */
-    for(pos=0,idx=0;pos<7;++pos) {
-        idx += sprintf(ipstr+idx, "%x:", ntohs(saddr.sin6_addr.s6_addr16[pos]));
-    }
-    sprintf(ipstr+idx, "%x", ntohs(saddr.sin6_addr.s6_addr16[7]));
+    sprintf(ipstr, "%x:%x:%x:%x:%x:%x:%x:%x", 
+            ntohs(saddr.sin6_addr.s6_addr16[0]),
+            ntohs(saddr.sin6_addr.s6_addr16[1]),
+            ntohs(saddr.sin6_addr.s6_addr16[2]),
+            ntohs(saddr.sin6_addr.s6_addr16[3]),
+            ntohs(saddr.sin6_addr.s6_addr16[4]),
+            ntohs(saddr.sin6_addr.s6_addr16[5]),
+            ntohs(saddr.sin6_addr.s6_addr16[6]),
+            ntohs(saddr.sin6_addr.s6_addr16[7]));
     LOG("ICMPv6 from %s type:%d code:%d", ipstr, msg[0], msg[1]);
+
+    // Only do Global Unicast IPv6 Address
+    if ((saddr.sin6_addr.s6_addr[0] | 0x3f) != 0x3f) {
+        // It isn't global unicast IPv6
+        return len;
+    }
+
     /* Add to neigh proxy */
     if (msg[0] == ND_NEIGHBOR_SOLICIT) {
         int rtn;
-        rtn = execl("/usr/sbin/ip", "-6", "neigh", "add", "proxy", ipstr, "dev", "eth1");
+        // rtn = execl("/usr/sbin/ip", "-6", "neigh", "add", "proxy", ipstr, "dev", "eth1");
+		rtn = neighor_addproxy(&saddr);
         LOG("add neigh proxy return: %d", rtn);
     }
 
     return len;
 }
+static char wan[16] = {"eth1"};
+static char lan[16] = {"br-lan"};
 
 int main(int argc, char *argv[])
 {
@@ -137,10 +370,31 @@ int main(int argc, char *argv[])
     unsigned int    msglen;
     unsigned char   msgdata[MAX_MSG_SIZE * 2];
 
-	socklan = open_icmp_socket(argv[1]);
+	rc = open_netlink_socket(&rth, 0, NETLINK_ROUTE);
+	if (rc<0) {
+		LOG("Can't create NETLINK socket: %s", strerror(errno));
+		return (-1);
+	}
+
+	rc = 1;
+	if (argc>=3) {
+		rth.if_lan = if_nametoindex(argv[1]);
+		rth.if_wan = if_nametoindex(argv[2]);
+		LOG("PROXY LAN:%s to WAN:%s", argv[1], argv[2]);
+	} else {
+		rth.if_lan = if_nametoindex(lan);
+		rth.if_wan = if_nametoindex(wan);
+		LOG("PROXY LAN:%s to WAN:%s", lan, wan);
+	}
+	if (rth.if_lan<=0 || rth.if_wan<=0) {
+		printf("usage: %s <lan> <wan>\n", argv[0]);
+		exit(-2);
+	}
+
+	socklan = open_icmp_socket(&rth);
 	if (socklan<=0) {
 		LOG("Can't create ICMPv6 socket: %d", socklan);
-		return (-1);
+		exit(-3);
 	}
 
     memset(fds, 0, sizeof(fds));
@@ -165,7 +419,7 @@ int main(int argc, char *argv[])
                 close(socklan);
                 // Allow a moment for things to maybe return to normal...
                 sleep(1);
-                socklan = open_icmp_socket(argv[1]);
+                socklan = open_icmp_socket(&rth);
                 if (socklan<=0)
                 {
                     LOG("open_icmp_sockets: failed to reinitialise one or both sockets.");
@@ -182,12 +436,10 @@ int main(int argc, char *argv[])
             }
             else if (fds[0].revents & POLLIN)
             {
-                msglen = get_rx(socklan, msgdata);
+                msglen = get_icmp6(socklan, msgdata);
                 // msglen is checked for sanity already within get_rx()
-                LOG("get_rx() gave msg with len = %d", msglen);
+                LOG("get_icmp6() gave msg with len = %d", msglen);
 
-                // Have processNS() do the rest of validation and work...
-                //processNS(msgdata, msglen);
                 continue;
             }
             else if ( rc == 0 )
@@ -211,3 +463,4 @@ int main(int argc, char *argv[])
 
 //////////////////////////////
 //# vim:ts=4
+
