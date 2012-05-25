@@ -11,13 +11,10 @@
 #include <poll.h>
 
 #include <arpa/inet.h>
-#include <net/if.h>
-
-//#include <netinet/in.h>
-//#include <netinet/ip6.h>
 #include <netinet/icmp6.h>
-//#include <linux/in6.h>
-//#include <linux/if_packet.h>
+#include <net/if.h>
+#include <net/mld.h>
+
 #include <linux/rtnetlink.h>
 
 #ifdef DEBUG
@@ -42,7 +39,9 @@ struct rtnl_handle
     int    icmp6fd;
     int    if_wan;
     int    if_lan;
-} rth = { .nlfd = -1, .icmp6fd = -1, .if_wan = -1, .if_lan = -1 };
+};
+
+
 
 static int rtnl_talk(struct rtnl_handle *rtnl, 
             struct nlmsghdr *n, struct nlmsghdr *answer)
@@ -74,24 +73,24 @@ static int rtnl_talk(struct rtnl_handle *rtnl,
         n->nlmsg_flags |= NLM_F_ACK;
 
 #ifdef DEBUG
-	{
-		int i=0;
-		fprintf(stderr, "msg_name:%d", sizeof(nladdr));
-		for (i=0;i<sizeof(nladdr);++i) {
-			if (i % 16 == 0) 
-				fprintf(stderr, "\n%08X: ", i);
-			fprintf(stderr, "%02x ", ((char*)&nladdr)[i]);
-		}
+    {
+        int i=0;
+        fprintf(stderr, "msg_name:%d", sizeof(nladdr));
+        for (i=0;i<sizeof(nladdr);++i) {
+            if (i % 16 == 0) 
+                fprintf(stderr, "\n%08X: ", i);
+            fprintf(stderr, "%02x ", ((char*)&nladdr)[i]);
+        }
 
-		fprintf(stderr, "\npayload:%d", n->nlmsg_len);
-		for (i=0;i<n->nlmsg_len;++i) {
-			if (i % 16 == 0) 
-				fprintf(stderr, "\n%08X: ", i);
-			fprintf(stderr, "%02x ", ((unsigned char*)n)[i]);
-		}
+        fprintf(stderr, "\npayload:%d", n->nlmsg_len);
+        for (i=0;i<n->nlmsg_len;++i) {
+            if (i % 16 == 0) 
+                fprintf(stderr, "\n%08X: ", i);
+            fprintf(stderr, "%02x ", ((unsigned char*)n)[i]);
+        }
         fprintf(stderr, "\n");
-	}
-#endif	
+    }
+#endif    
 
     /*msg here*/
     status = sendmsg(rtnl->nlfd, &msg, 0);
@@ -189,10 +188,10 @@ static int rtnl_talk(struct rtnl_handle *rtnl,
     ((struct rtattr *) (((void *) (nmsg)) + RTA_ALIGN((nmsg)->nlmsg_len)))
 
 
-static int neighor_addproxy(struct sockaddr_in6* ip6)
+static int neighor_addproxy(struct rtnl_handle* rth, struct in6_addr* ip6)
 {
     struct {
-        struct nlmsghdr	n;
+        struct nlmsghdr    n;
         struct ndmsg    ndm;
         char            buf[256];
     } req;
@@ -206,11 +205,11 @@ static int neighor_addproxy(struct sockaddr_in6* ip6)
     req.n.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE|NLM_F_EXCL;
     req.n.nlmsg_pid = 0;
     req.ndm.ndm_family = AF_INET6;
-    req.ndm.ndm_ifindex = rth.if_wan;
+    req.ndm.ndm_ifindex = rth->if_wan;
     req.ndm.ndm_state = NUD_PERMANENT;
     req.ndm.ndm_flags = NTF_PROXY;
 
-    LOG("PROXY LAN:%d to WAN:%d", rth.if_lan, rth.if_wan);
+    //LOG("PROXY LAN:%d to WAN:%d", rth.if_lan, rth.if_wan);
 
     // Adope the IPv6 address into the payload
     len = RTA_LENGTH(16);
@@ -221,7 +220,7 @@ static int neighor_addproxy(struct sockaddr_in6* ip6)
     rta = NLMSG_TAIL(&(req.n));
     rta->rta_len = len;
     rta->rta_type = NDA_DST;
-    memcpy(RTA_DATA(rta), ip6->sin6_addr.s6_addr, 16);
+    memcpy(RTA_DATA(rta), ip6, 16);
     req.n.nlmsg_len = NLMSG_ALIGN(req.n.nlmsg_len) + RTA_ALIGN(len);
     
     // Netlink talk to kernel
@@ -232,60 +231,60 @@ static int neighor_addproxy(struct sockaddr_in6* ip6)
     return 0;
 }
 
-static int open_netlink_socket(struct rtnl_handle *rthp) 
+static int open_netlink_socket(struct rtnl_handle *rth) 
 {
     socklen_t addr_len;
     int iobuf = 4096;
 
-    rthp->nlfd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
-    if (rthp->nlfd < 0) {
+    rth->nlfd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+    if (rth->nlfd < 0) {
         perror("Cannot open netlink socket");
         return -1;
     }
 
-    if (setsockopt(rthp->nlfd,SOL_SOCKET,SO_SNDBUF,&iobuf,sizeof(iobuf)) < 0) {
+    if (setsockopt(rth->nlfd,SOL_SOCKET,SO_SNDBUF,&iobuf,sizeof(iobuf)) < 0) {
         perror("SO_SNDBUF");
         return -1;
     }
 
-    if (setsockopt(rthp->nlfd,SOL_SOCKET,SO_RCVBUF,&iobuf,sizeof(iobuf)) < 0) {
+    if (setsockopt(rth->nlfd,SOL_SOCKET,SO_RCVBUF,&iobuf,sizeof(iobuf)) < 0) {
         perror("SO_RCVBUF");
         return -1;
     }
 
-    memset(&rthp->local, 0, sizeof(rthp->local));
-    rthp->local.nl_family = AF_NETLINK;
-    rthp->local.nl_groups = 0; //subscriptions;
+    memset(&rth->local, 0, sizeof(rth->local));
+    rth->local.nl_family = AF_NETLINK;
+    rth->local.nl_groups = 0; //subscriptions;
 
-    if (bind(rthp->nlfd, (struct sockaddr*)&rthp->local, sizeof(rthp->local)) < 0) {
+    if (bind(rth->nlfd, (struct sockaddr*)&rth->local, sizeof(rth->local)) < 0) {
         perror("Cannot bind netlink socket");
         return -1;
     }
-    addr_len = sizeof(rthp->local);
-    if (getsockname(rthp->nlfd, (struct sockaddr*)&rthp->local, &addr_len) < 0) {
+    addr_len = sizeof(rth->local);
+    if (getsockname(rth->nlfd, (struct sockaddr*)&rth->local, &addr_len) < 0) {
         perror("Cannot getsockname");
         return -1;
     }
-    if (addr_len != sizeof(rthp->local)) {
+    if (addr_len != sizeof(rth->local)) {
         LOG("Wrong address length %d\n", addr_len);
         return -1;
     }
-    if (rthp->local.nl_family != AF_NETLINK) {
-        LOG("Wrong address family %d\n", rthp->local.nl_family);
+    if (rth->local.nl_family != AF_NETLINK) {
+        LOG("Wrong address family %d\n", rth->local.nl_family);
         return -1;
     }
-    rthp->seq = 31415; // time(NULL);
+    rth->seq = 31415; // time(NULL);
     return 0;
 }
 
 
-static int open_icmp_socket(struct rtnl_handle* rthp)
+static int open_icmp_socket(struct rtnl_handle* rth)
 {
     int sock, err, optval;
     //struct sockaddr_ll lladdr;
     struct sockaddr_in6 in6addr;
     //struct icmp6_filter xfilter;
-	struct ipv6_mreq mreq;
+    struct ipv6_mreq mreq;
     
     sock = socket(PF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
     if (sock < 0)
@@ -298,15 +297,15 @@ static int open_icmp_socket(struct rtnl_handle* rthp)
     // Bind the socket to the interface we're interested in
     memset(&in6addr, 0, sizeof(in6addr));
     in6addr.sin6_family = AF_INET6;
-    in6addr.sin6_scope_id = rthp->if_lan; //if_nametoindex(lan);
+    in6addr.sin6_scope_id = rth->if_lan; //if_nametoindex(lan);
     err=bind(sock, (struct sockaddr *)&in6addr, sizeof(in6addr));
     if (err < 0)
     {
         perror("packet socket bind return failed:");
         return (-1);
     }    
-    LOG("ICMPv6 socket bind to interface %d OK", rthp->if_lan); //if_nametoindex(lan));
-	
+    LOG("ICMPv6 socket bind to interface %d OK", rth->if_lan); //if_nametoindex(lan));
+    
     optval = 1;
     if (setsockopt(sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &optval, sizeof(optval)) < 0)
         perror("Error! setsockopt(IPV6_RECVPKTINFO)"); /* XXX err? */
@@ -316,30 +315,25 @@ static int open_icmp_socket(struct rtnl_handle* rthp)
     ICMP6_FILTER_SETPASS(ND_NEIGHBOR_SOLICIT, &xfilter);
     ICMP6_FILTER_SETPASS(ICMP6_MEMBERSHIP_REPORT, &xfilter);
     if (setsockopt(sock, IPPROTO_IPV6, ICMP6_FILTER, &xfilter, sizeof(xfilter)) <0 )
-		perror("Error! setsockopt(IPV6_ADD_MEMBERSHIP)"); 
+        perror("Error! setsockopt(IPV6_ADD_MEMBERSHIP)"); 
     */
 
-	// Join the Solicited-Node Multicast Address FF02:0:0:0:0:1:FF00:1
-	// You need to mangle the Solicited-Node multicast traffic to it.
-	// http://tools.ietf.org/html/rfc4291
-	mreq.ipv6mr_interface = rthp->if_lan;
-	mreq.ipv6mr_multiaddr.s6_addr16[0] = htons(0xff02);
-	mreq.ipv6mr_multiaddr.s6_addr16[1] = 0;
-	mreq.ipv6mr_multiaddr.s6_addr16[2] = 0;
-	mreq.ipv6mr_multiaddr.s6_addr16[3] = 0x00;
-	mreq.ipv6mr_multiaddr.s6_addr16[4] = 0x00;
-	mreq.ipv6mr_multiaddr.s6_addr16[5] = 0x00;
-	mreq.ipv6mr_multiaddr.s6_addr16[6] = 0x00;
-	mreq.ipv6mr_multiaddr.s6_addr16[7] = htons(0x16);
-	if (setsockopt(sock, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
-		perror("Error! setsockopt(IPV6_ADD_MEMBERSHIP)"); 
-	
-    rthp->icmp6fd = sock;
+    /*
+     * Join the MLDv2 multicast group
+     */
+    memset(&mreq, 0, sizeof(mreq));
+    mreq.ipv6mr_interface = rth->if_lan;
+    mreq.ipv6mr_multiaddr.s6_addr16[0] = htons(0xff02);
+    mreq.ipv6mr_multiaddr.s6_addr16[7] = htons(0x16);
+    if (setsockopt(sock, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
+        perror("Error! setsockopt(IPV6_ADD_MEMBERSHIP)"); 
+    
+    rth->icmp6fd = sock;
 
     return sock;
 }
 
-int get_icmp6(int socklan, unsigned char *msg) 
+static int process_icmp6(struct rtnl_handle* rth, unsigned char *msg) 
 {
     struct sockaddr_in6 saddr;
     struct msghdr mhdr;
@@ -358,7 +352,7 @@ int get_icmp6(int socklan, unsigned char *msg)
     mhdr.msg_control = NULL;
     mhdr.msg_controllen = 0;
 
-    len = recvmsg(socklan, &mhdr, 0);
+    len = recvmsg(rth->icmp6fd, &mhdr, 0);
 
     /* Impossible.. But let's not take chances */
     if (len > MAX_MSG_SIZE) {
@@ -381,22 +375,44 @@ int get_icmp6(int socklan, unsigned char *msg)
             ntohs(saddr.sin6_addr.s6_addr16[7]));
     LOG("ICMPv6 from %s type:%d code:%d", ipstr, msg[0], msg[1]);
 
-/*
-    // Only do Global Unicast IPv6 Address range is 2000::/3
-    if ((saddr.sin6_addr.s6_addr[0] & 0xE0) != 0x30) {
-        // It isn't global unicast IPv6
-        return len;
-    }
-*/
+    // Join the Solicited-Node Multicast Address FF02:0:0:0:0:1:FF00:1
+    // You need to mangle the Solicited-Node multicast traffic to it.
+    // http://tools.ietf.org/html/rfc4291
+    if (msg[0] == 143) { // ICMPV6_MLD2_REPORT 
 
-    saddr.sin6_addr.s6_addr[0] = 0x20;
+        struct ipv6_mreq mreq;
+        struct mld2_report* mldrep = (struct mld2_report*)msg;
     
+        // Only handle the unsigned IPv6 messages
+        if (   saddr.sin6_addr.s6_addr32[0] != 0
+            || saddr.sin6_addr.s6_addr32[1] != 0
+            || saddr.sin6_addr.s6_addr32[2] != 0
+            || saddr.sin6_addr.s6_addr32[3] != 0 )
+        {
+            return len;
+        }
+
+        if (mldrep->mld2r_grec[1].grec_type == 2) {
+            // Add into multicast group
+            memset(&mreq, 0, sizeof(mreq));
+            mreq.ipv6mr_interface = rth->if_lan;
+            memcpy(mreq.ipv6mr_multiaddr.s6_addr, mldrep->mld2r_grec[1].grec_mca, sizeof(mreq.ipv6mr_multiaddr));
+            if (setsockopt(sock, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
+                perror("Error! setsockopt(IPV6_ADD_MEMBERSHIP)"); 
+        }
+    }
+
     /* Add to neigh proxy */
-    if (msg[0] == ND_NEIGHBOR_SOLICIT) {
+    if (msg[0] == ND_NEIGHBOR_SOLICIT && len>=32) {
         int rtn;
-        //LOG("add neigh proxy: %s", ipstr);
-        // rtn = execl("/usr/sbin/ip", "-6", "neigh", "add", "proxy", ipstr, "dev", "eth1");
-        rtn = neighor_addproxy(&saddr);
+    
+        // Only do Global Unicast IPv6 Address range is 2000::/3
+        if ((msg[16] & 0xE0) != 0x30) {
+            // It isn't global unicast IPv6
+            return len;
+        }
+    
+        rtn = neighor_addproxy(rth, (struct in6_addr*)(msg+16));
         LOG("add neigh proxy return: %d", rtn);
     }
 
@@ -409,12 +425,11 @@ static char lan[16] = {"br-lan"};
 
 int main(int argc, char *argv[])
 {
-    int             socklan;
     int             rc;
     struct pollfd   fds[2];
     unsigned int    msglen;
     unsigned char   msgdata[MAX_MSG_SIZE * 2];
-
+    struct rtnl_handle rth = { .nlfd = -1, .icmp6fd = -1, .if_wan = -1, .if_lan = -1 };
     //memset(&rth, 0, sizeof(rth));
 
     if (argc>=3) {
@@ -438,14 +453,14 @@ int main(int argc, char *argv[])
         exit (-2);
     }
 
-    socklan = open_icmp_socket(&rth);
-    if (socklan<=0) {
-        LOG("Can't create ICMPv6 socket: %d", socklan);
+    rc = open_icmp_socket(&rth);
+    if (rc<0) {
+        LOG("Can't create ICMPv6 socket: %d", rc);
         exit(-3);
     }
 
     memset(fds, 0, sizeof(fds));
-    fds[0].fd = socklan;
+    fds[0].fd = rth->icmp6fd; // socklan;
     fds[0].events = POLLIN;
     fds[0].revents = 0;
     fds[1].fd = -1;
@@ -463,16 +478,16 @@ int main(int argc, char *argv[])
             {
                 LOG("Major socket error on fds[0 or 1].fd");
                 // Try and recover
-                close(socklan);
+                close(rth->icmp6fd);
                 // Allow a moment for things to maybe return to normal...
                 sleep(1);
-                socklan = open_icmp_socket(&rth);
-                if (socklan<=0) {
+                rc = open_icmp_socket(&rth);
+                if (rc<0) {
                     LOG("open_icmp_sockets: failed to reinitialise one or both sockets.");
                     exit(1);
                 }
                 memset(fds, 0, sizeof(fds));
-                fds[0].fd = socklan;
+                fds[0].fd = rth->icmp6fd;
                 fds[0].events = POLLIN;
                 fds[0].revents = 0;
                 fds[1].fd = -1;
@@ -482,9 +497,9 @@ int main(int argc, char *argv[])
             }
             else if (fds[0].revents & POLLIN)
             {
-                msglen = get_icmp6(socklan, msgdata);
+                msglen = process_icmp6(&rth, msgdata);
                 // msglen is checked for sanity already within get_rx()
-                LOG("get_icmp6() gave msg with len = %d", msglen);
+                LOG("process_icmp6() gave msg with len = %d", msglen);
 
                 continue;
             }
