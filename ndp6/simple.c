@@ -308,9 +308,18 @@ static int open_icmp_socket(struct rtnl_handle* rth)
     // Set the ICMPv6 filter
     ICMP6_FILTER_SETBLOCKALL(&xfilter);
     ICMP6_FILTER_SETPASS(ND_NEIGHBOR_SOLICIT, &xfilter);
-    ICMP6_FILTER_SETPASS(143, &xfilter);
+    ICMP6_FILTER_SETPASS(ND_NEIGHBOR_ADVERT, &xfilter);
+    ICMP6_FILTER_SETPASS(143, &xfilter); // MLDv2 report
     if (setsockopt(sock, IPPROTO_ICMPV6, ICMP6_FILTER, &xfilter, sizeof(xfilter)) <0 )
         perror("Error! setsockopt(ICMP6_FILTER)"); 
+
+    // Join the all nodes multicast group: FF02::1
+    memset(&mreq, 0, sizeof(mreq));
+    mreq.ipv6mr_interface = rth->if_lan;
+    mreq.ipv6mr_multiaddr.s6_addr16[0] = htons(0xff02);
+    mreq.ipv6mr_multiaddr.s6_addr16[7] = htons(0x01);
+    if (setsockopt(sock, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
+        perror("Error! setsockopt(IPV6_ADD_MEMBERSHIP)"); 
 
     // Join the MLDv2 multicast group
     memset(&mreq, 0, sizeof(mreq));
@@ -404,6 +413,31 @@ static int process_icmp6(struct rtnl_handle* rth, unsigned char *msg)
         int rtn;
     
         dump("NEIGHBOR_SOLICIT", msg, len);
+
+        // Only do Global Unicast IPv6 Address range is 2000::/3
+        if (((unsigned char)(msg[8]) & 0xE0) != 0x20) {
+            // It isn't global unicast IPv6
+            return len;
+        }
+    
+        rtn = neighor_addproxy(rth, (struct in6_addr*)(msg+8));
+        LOG("add neigh proxy return: %d", rtn);
+    }
+
+    /* Add to neigh proxy, OSX is using Neighbor Advert */
+    if (msg[0] == ND_NEIGHBOR_ADVERT && len>=24) {
+        int rtn;
+    
+        dump("NEIGHBOR_ADVERT", msg, len);
+
+        // Only handle the unsigned IPv6 messages
+        if (   saddr.sin6_addr.s6_addr32[0] != 0
+            || saddr.sin6_addr.s6_addr32[1] != 0
+            || saddr.sin6_addr.s6_addr32[2] != 0
+            || saddr.sin6_addr.s6_addr32[3] != 0 )
+        {
+            return len;
+        }
 
         // Only do Global Unicast IPv6 Address range is 2000::/3
         if (((unsigned char)(msg[8]) & 0xE0) != 0x20) {
