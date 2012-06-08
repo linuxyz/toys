@@ -307,6 +307,7 @@ static int open_icmp_socket(struct rtnl_handle* rth)
 
     // Set the ICMPv6 filter
     ICMP6_FILTER_SETBLOCKALL(&xfilter);
+    ICMP6_FILTER_SETPASS(ND_ROUTER_SOLICIT, &xfilter);
     ICMP6_FILTER_SETPASS(ND_NEIGHBOR_SOLICIT, &xfilter);
     ICMP6_FILTER_SETPASS(ND_NEIGHBOR_ADVERT, &xfilter);
     ICMP6_FILTER_SETPASS(143, &xfilter); // MLDv2 report
@@ -429,15 +430,6 @@ static int process_icmp6(struct rtnl_handle* rth, unsigned char *msg)
         int rtn;
     
         dump("NEIGHBOR_ADVERT", msg, len);
-
-        // Only handle the unsigned IPv6 messages
-        if (   saddr.sin6_addr.s6_addr32[0] != 0
-            || saddr.sin6_addr.s6_addr32[1] != 0
-            || saddr.sin6_addr.s6_addr32[2] != 0
-            || saddr.sin6_addr.s6_addr32[3] != 0 )
-        {
-            return len;
-        }
 
         // Only do Global Unicast IPv6 Address range is 2000::/3
         if (((unsigned char)(msg[8]) & 0xE0) != 0x20) {
