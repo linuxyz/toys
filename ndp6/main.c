@@ -1,5 +1,8 @@
 #include "slaac6.h"
 
+#include <poll.h>
+#include <net/if.h>
+
 void dump(const char* title, void* msg, int len)
 {
 #ifdef DEBUG    
@@ -24,11 +27,8 @@ static char lan[16] = {"br-lan"};
 int main(int argc, char *argv[])
 {
     int             rc;
-    struct pollfd   fds[2];
-    unsigned int    msglen;
-    unsigned char   msgdata[MAX_MSG_SIZE * 2];
+    struct pollfd   fds[3];
     struct slaac_handle rth = { .nlfd = -1, .icmp6fd = -1, .if_wan = -1, .if_lan = -1 };
-    //memset(&rth, 0, sizeof(rth));
 
     if (argc>=3) {
         rth.if_lan = if_nametoindex(argv[1]);
@@ -61,9 +61,12 @@ int main(int argc, char *argv[])
     fds[0].fd = rth.icmp6fd; // socklan;
     fds[0].events = POLLIN;
     fds[0].revents = 0;
-    fds[1].fd = -1;
-    fds[1].events = 0;
+    fds[1].fd = rth.icmp6ext;
+    fds[1].events = POLLIN;
     fds[1].revents = 0;
+    fds[2].fd = -1;
+    fds[2].events = 0;
+    fds[2].revents = 0;
 
     for (;;)
     {
@@ -76,7 +79,7 @@ int main(int argc, char *argv[])
             {
                 LOG("Major socket error on fds[0 or 1].fd");
                 // Try and recover
-                close(rth.icmp6fd);
+                close_icmp_socket(&rth);
                 // Allow a moment for things to maybe return to normal...
                 sleep(1);
                 rc = open_icmp_socket(&rth);
@@ -88,17 +91,22 @@ int main(int argc, char *argv[])
                 fds[0].fd = rth.icmp6fd;
                 fds[0].events = POLLIN;
                 fds[0].revents = 0;
-                fds[1].fd = -1;
-                fds[1].events = 0;
+                fds[1].fd = rth.icmp6ext;
+                fds[1].events = POLLIN;
                 fds[1].revents = 0;
+                fds[2].fd = -1;
+                fds[2].events = 0;
+                fds[2].revents = 0;
                 continue;
             }
             else if (fds[0].revents & POLLIN)
             {
-                msglen = process_icmp6(&rth, msgdata);
-                // msglen is checked for sanity already within get_rx()
-                LOG("process_icmp6() gave msg with len = %d", msglen);
-
+                process_icmp6_local(&rth);
+                continue;
+            }
+            else if (fds[1].revents & POLLIN)
+            {
+                process_icmp6_ext(&rth);
                 continue;
             }
             else if ( rc == 0 )

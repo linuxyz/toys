@@ -154,7 +154,7 @@ int neighor_addproxy(struct slaac_handle* rth, struct in6_addr* ip6)
     // Adope the IPv6 address into the payload
     len = RTA_LENGTH(16);
     if (NLMSG_ALIGN(req.n.nlmsg_len) + RTA_ALIGN(len) > sizeof(req)) {
-        LOG("RTNETLINK: message exceeded bound of %d\n", sizeof(req));
+        LOG("RTNETLINK: message exceeded bound of %lu\n", sizeof(req));
         return -1;
     }
     rta = NLMSG_TAIL(&(req.n));
