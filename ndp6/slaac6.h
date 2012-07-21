@@ -38,6 +38,9 @@ struct slaac_handle
     // Interface ID
     int    if_wan;
     int    if_lan;
+    // Link Layer Address: MAC
+    __u8   lladdr_lan[8];
+    __u8   lladdr_wan[8];
     // Sockets of internal and external
     int    icmp6fd;
     int    icmp6ext;

@@ -5,6 +5,12 @@
 
 #define ICMPV6_MLD2_REPORT      143
 #define MLD2_MODE_IS_EXCLUDE    2
+#define MLD2_CHANGE_TO_EXCLUDE  4
+
+
+// We use it to save the Router Advert message
+unsigned char _ra_msg[256];
+int _len;
 
 static int icmp_socket(int if_scope, struct icmp6_filter* xfilter)
 {
@@ -35,6 +41,14 @@ static int icmp_socket(int if_scope, struct icmp6_filter* xfilter)
     optval = 1;
     if (setsockopt(sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &optval, sizeof(optval)) < 0) {
         perror("Error! setsockopt(IPV6_RECVPKTINFO)"); /* XXX err? */
+        close(sock);
+        return -__LINE__;
+    }
+
+    // Set IPV6_MULTICAST_LOOP
+    optval = 0;
+    if (setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &optval, sizeof(optval)) <0 ) {
+        perror("Error! setsockopt(IPV6_MULTICAST_LOOP)");
         close(sock);
         return -__LINE__;
     }
@@ -116,34 +130,37 @@ int open_icmp_socket(struct slaac_handle* rth)
         close_icmp_socket(rth);
         return -__LINE__;
     }
+    rth->icmp6ext = sock;
+    LOG("WAN ICMPv6 socket OK.");
+
+    // Mark it
+    _ra_msg[0] = 0;
 
     return 0;
 }
 
 // Using local variant directly!
-static struct sockaddr_in6 _saddr;
-static struct msghdr _mhdr;
-static struct iovec _iov;
-static unsigned char   _msg[MAX_MSG_SIZE * 2];
-static struct icmp6_hdr* _icmp6 = (struct icmp6_hdr*)_msg;
 
-static int receive_icmp6(int fd)
+static int receive_icmp6(int fd, struct sockaddr_in6* addr, unsigned char* msg)
 {
-    int len = 0;
+    struct iovec iov;
+    struct msghdr mhdr;
     char ipstr[64]; // IP address
+    int len = 0;
 
-    _iov.iov_len = MAX_MSG_SIZE;
-    _iov.iov_base = (caddr_t) _msg;
+    memset(&iov, 0, sizeof(iov));
+    iov.iov_len = MAX_MSG_SIZE;
+    iov.iov_base = (caddr_t) msg;
 
-    memset(&_mhdr, 0, sizeof(_mhdr));
-    _mhdr.msg_name = (caddr_t)&_saddr;
-    _mhdr.msg_namelen = sizeof(_saddr);
-    _mhdr.msg_iov = &_iov;
-    _mhdr.msg_iovlen = 1;
-    _mhdr.msg_control = NULL;
-    _mhdr.msg_controllen = 0;
+    memset(&mhdr, 0, sizeof(mhdr));
+    mhdr.msg_name = (caddr_t)addr;
+    mhdr.msg_namelen = sizeof(*addr);
+    mhdr.msg_iov = &iov;
+    mhdr.msg_iovlen = 1;
+    mhdr.msg_control = NULL;
+    mhdr.msg_controllen = 0;
 
-    len = recvmsg(fd, &_mhdr, 0);
+    len = recvmsg(fd, &mhdr, 0);
     if (len < 0) {
         perror("recvmsg failed:");
         return len;
@@ -151,15 +168,15 @@ static int receive_icmp6(int fd)
 
 #ifdef DEBUG
     sprintf(ipstr, "%x:%x:%x:%x:%x:%x:%x:%x",
-            ntohs(_saddr.sin6_addr.s6_addr16[0]),
-            ntohs(_saddr.sin6_addr.s6_addr16[1]),
-            ntohs(_saddr.sin6_addr.s6_addr16[2]),
-            ntohs(_saddr.sin6_addr.s6_addr16[3]),
-            ntohs(_saddr.sin6_addr.s6_addr16[4]),
-            ntohs(_saddr.sin6_addr.s6_addr16[5]),
-            ntohs(_saddr.sin6_addr.s6_addr16[6]),
-            ntohs(_saddr.sin6_addr.s6_addr16[7]));
-    LOG("ICMPv6 from %s type:%d code:%d", ipstr, _msg[0], _msg[1]);
+            ntohs(addr->sin6_addr.s6_addr16[0]),
+            ntohs(addr->sin6_addr.s6_addr16[1]),
+            ntohs(addr->sin6_addr.s6_addr16[2]),
+            ntohs(addr->sin6_addr.s6_addr16[3]),
+            ntohs(addr->sin6_addr.s6_addr16[4]),
+            ntohs(addr->sin6_addr.s6_addr16[5]),
+            ntohs(addr->sin6_addr.s6_addr16[6]),
+            ntohs(addr->sin6_addr.s6_addr16[7]));
+    LOG("ICMPv6 from %s type:%d code:%d", ipstr, msg[0], msg[1]);
 #endif
 
     /* Impossible.. But let's not take chances */
@@ -171,11 +188,31 @@ static int receive_icmp6(int fd)
     return len;
 }
 
+static void swaplladdr(unsigned char* icmp6opt, int len, unsigned char* mac)
+{
+    int pos = 0;
+    while (pos < len) {
+        // this is the Link Layer Address of Source
+        if ( (icmp6opt[pos] & 0x03)  && icmp6opt[pos+1]==1) {
+            memcpy(icmp6opt+pos+2, mac, 6);
+            break;
+        }
+
+        if (icmp6opt[pos+1]==0)
+            pos += 8;
+        else
+            pos += icmp6opt[pos+1] * 8;
+    }
+}
+
 int process_icmp6_local(struct slaac_handle* rth)
 {
     int len, rtn;
+    struct sockaddr_in6 saddr;
+    unsigned char msg[MAX_MSG_SIZE * 2];
+    struct icmp6_hdr* _icmp6 = (struct icmp6_hdr*)msg;
 
-    len = receive_icmp6(rth->icmp6fd);
+    len = receive_icmp6(rth->icmp6fd, &saddr, msg);
     if (len<=0)
         return len;
 
@@ -190,12 +227,25 @@ int process_icmp6_local(struct slaac_handle* rth)
         in6addr.sin6_addr.s6_addr[ 1] = 0x02;
         in6addr.sin6_addr.s6_addr[15] = 0x02;
 
-        dump("ND_ROUTER_SOLICIT", _msg, len);
+        dump("<--ND_ROUTER_SOLICIT", msg, len);
 
-        rtn = sendto(rth->icmp6ext, _msg, len, 0, (struct sockaddr*)&in6addr, sizeof(in6addr));
+        if (_ra_msg[0] == ND_ROUTER_ADVERT && _len>=28) {
+            in6addr.sin6_addr.s6_addr[15] = 0x01;
+            rtn = sendto(rth->icmp6fd, _ra_msg, _len, 0, (struct sockaddr*)&in6addr, sizeof(in6addr));
+            if (rtn<len) {
+                perror("Error! sendto(MC_ALL_NODES)");
+            }
+            LOG("Response ROUTER ADVERT with cache to LAN!");
+            return rtn;
+        }
+
+        // update the source MAC
+        swaplladdr(msg+8, len-8, rth->lladdr_wan);
+        rtn = sendto(rth->icmp6ext, msg, len, 0, (struct sockaddr*)&in6addr, sizeof(in6addr));
         if (rtn<len) {
             perror("Error! sendto(MC_ALL_ROUTERS)");
         }
+        LOG("Forward ROUTER SOLICIT to WAN!");
         return rtn;
     }
 
@@ -209,23 +259,23 @@ int process_icmp6_local(struct slaac_handle* rth)
         struct ipv6_mreq mreq = { .ipv6mr_interface = rth->if_lan };
     
         // refer to http://tools.ietf.org/html/rfc3810 5.2
-        dump("ICMPV6_MLD2_REPORT", _msg, len);
+        dump("<--ICMPV6_MLD2_REPORT", msg, len);
 
         pos = 8;
         nmcast = ntohs(_icmp6->icmp6_data16[1]);
         for (i=0;i<nmcast && len>=pos+20;
             //   FIX LEN + AUX        + All Source Addresses
-            pos += 20 + _msg[pos+1]*4 + _msg[pos+2]*256*16 + _msg[pos+3]*16, i++) {
+            pos += 20 + msg[pos+1]*4 + msg[pos+2]*256*16 + msg[pos+3]*16, i++) {
 
             // only exclude mode is right
-            if (_msg[pos]!=MLD2_MODE_IS_EXCLUDE)
+            if (msg[pos]!=MLD2_CHANGE_TO_EXCLUDE)
                 continue;
             // Test the multicast group
-            if (memcmp(_msg+pos+4, &snma, 13)!=0) {
+            if (memcmp(msg+pos+4, &snma, 13)!=0) {
                 continue;
             }
             LOG("Add to Solicited-node Multicast Group");
-            memcpy(mreq.ipv6mr_multiaddr.s6_addr, _msg+pos+4, 16);
+            memcpy(mreq.ipv6mr_multiaddr.s6_addr, msg+pos+4, 16);
             if (setsockopt(rth->icmp6fd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
                 perror("Error! setsockopt(IPV6_ADD_MEMBERSHIP)");
         }
@@ -237,14 +287,14 @@ int process_icmp6_local(struct slaac_handle* rth)
     if (_icmp6->icmp6_type == ND_NEIGHBOR_SOLICIT && len>=24) {
 
         // Only do Global Unicast IPv6 Address range is 2000::/3
-        if (((unsigned char)(_msg[8]) & 0xE0) != 0x20) {
+        if (((unsigned char)(msg[8]) & 0xE0) != 0x20) {
             // It isn't global unicast IPv6
             return len;
         }
     
-        dump("NEIGHBOR_SOLICIT", _msg, len);
+        dump("<--NEIGHBOR_SOLICIT", msg, len);
 
-        rtn = neighor_addproxy(rth, (struct in6_addr*)(_msg+8));
+        rtn = neighor_addproxy(rth, (struct in6_addr*)(msg+8));
         LOG("add neigh proxy return: %d", rtn);
         return rtn;
     }
@@ -253,23 +303,23 @@ int process_icmp6_local(struct slaac_handle* rth)
     if (_icmp6->icmp6_type == ND_NEIGHBOR_ADVERT && len>=24) {
     
         // Only handle the unsigned IPv6 messages
-        if (   _saddr.sin6_addr.s6_addr32[0] != 0
-            || _saddr.sin6_addr.s6_addr32[1] != 0
-            || _saddr.sin6_addr.s6_addr32[2] != 0
-            || _saddr.sin6_addr.s6_addr32[3] != 0 )
+        if (   saddr.sin6_addr.s6_addr32[0] != 0
+            || saddr.sin6_addr.s6_addr32[1] != 0
+            || saddr.sin6_addr.s6_addr32[2] != 0
+            || saddr.sin6_addr.s6_addr32[3] != 0 )
         {
             return len;
         }
 
-        dump("NEIGHBOR_ADVERT", _msg, len);
+        dump("<--NEIGHBOR_ADVERT", msg, len);
 
         // Only do Global Unicast IPv6 Address range is 2000::/3
-        if (((unsigned char)(_msg[8]) & 0xE0) != 0x20) {
+        if (((unsigned char)(msg[8]) & 0xE0) != 0x20) {
             // It isn't global unicast IPv6
             return len;
         }
     
-        rtn = neighor_addproxy(rth, (struct in6_addr*)(_msg+8));
+        rtn = neighor_addproxy(rth, (struct in6_addr*)(msg+8));
         LOG("add neigh proxy return: %d", rtn);
         return rtn;
     }
@@ -279,9 +329,12 @@ int process_icmp6_local(struct slaac_handle* rth)
 
 int process_icmp6_ext(struct slaac_handle* rth)
 {
+    struct sockaddr_in6 saddr;
+    unsigned char msg[MAX_MSG_SIZE * 2];
+    struct icmp6_hdr* _icmp6 = (struct icmp6_hdr*)msg;
     int len, rtn;
 
-    len = receive_icmp6(rth->icmp6ext);
+    len = receive_icmp6(rth->icmp6ext, &saddr, msg);
     if (len<=0)
         return len;
 
@@ -296,12 +349,20 @@ int process_icmp6_ext(struct slaac_handle* rth)
         in6addr.sin6_addr.s6_addr[ 1] = 0x02;
         in6addr.sin6_addr.s6_addr[15] = 0x01;
 
-        dump("ND_ROUTER_ADVERT", _msg, len);
+        dump("-->ND_ROUTER_ADVERT ?", msg, len);
 
-        rtn = sendto(rth->icmp6fd, _msg, len, 0, (struct sockaddr*)&in6addr, sizeof(in6addr));
+        swaplladdr(msg+16, len-16, rth->lladdr_lan);
+        // save it
+        if (len<sizeof(_ra_msg)) {
+            _len = len;
+            memcpy(_ra_msg, msg, _len);
+            LOG("Save ROUTER ADVERT message!");
+        }
+        rtn = sendto(rth->icmp6fd, msg, len, 0, (struct sockaddr*)&in6addr, sizeof(in6addr));
         if (rtn<len) {
             perror("Error! sendto(MC_ALL_NODES)");
         }
+        LOG("Forward ROUTER ADVERT to LAN!");
         return rtn;
     }
 

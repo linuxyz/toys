@@ -2,6 +2,7 @@
 
 #include <poll.h>
 #include <net/if.h>
+#include <sys/ioctl.h>
 
 void dump(const char* title, void* msg, int len)
 {
@@ -26,24 +27,24 @@ static char lan[16] = {"br-lan"};
 
 int main(int argc, char *argv[])
 {
+    struct slaac_handle rth = { .nlfd = -1, .icmp6fd = -1, .icmp6ext = -1, .if_wan = -1, .if_lan = -1 };
     int             rc;
-    struct pollfd   fds[3];
-    struct slaac_handle rth = { .nlfd = -1, .icmp6fd = -1, .if_wan = -1, .if_lan = -1 };
+    struct pollfd   fds[2];
+    struct ifreq    req;
 
     if (argc>=3) {
-        rth.if_lan = if_nametoindex(argv[1]);
-        rth.if_wan = if_nametoindex(argv[2]);
-        LOG("PROXY LAN:%s to WAN:%s", argv[1], argv[2]);
-    } else {
-        rth.if_lan = if_nametoindex(lan);
-        rth.if_wan = if_nametoindex(wan);
-        LOG("PROXY LAN:%s to WAN:%s", lan, wan);
+        strncpy(lan, argv[1], 15);
+        strncpy(wan, argv[2], 15);
     }
+
+    // Interface to ID
+    rth.if_lan = if_nametoindex(lan);
+    rth.if_wan = if_nametoindex(wan);
     if (rth.if_lan<=0 || rth.if_wan<=0) {
         printf("usage: %s <lan> <wan>\n", argv[0]);
         exit(-1);
     }
-    LOG("PROXY LAN:%d to WAN:%d", rth.if_lan, rth.if_wan);
+    LOG("PROXY LAN:%s#%d to WAN:%s#%d", lan, rth.if_lan, wan, rth.if_wan);
 
     rc = open_netlink_socket(&rth);
     if (rc<0) {
@@ -51,12 +52,32 @@ int main(int argc, char *argv[])
         exit (-2);
     }
 
+RETRY_HERE:
     rc = open_icmp_socket(&rth);
     if (rc<0) {
         LOG("Can't create ICMPv6 socket: %d", rc);
         exit(-3);
     }
 
+    // Get the MAC addresses
+    strcpy(req.ifr_name, lan);
+    if (ioctl(rth.icmp6fd, SIOCGIFHWADDR, &req)<0) {
+        perror("Unable to get the MAC address of LAN");
+        close_icmp_socket(&rth);
+        exit(-4);
+    }
+    memcpy(rth.lladdr_lan, req.ifr_hwaddr.sa_data, 6);
+
+    // Get the MAC addresses
+    strcpy(req.ifr_name, wan);
+    if (ioctl(rth.icmp6ext, SIOCGIFHWADDR, &req)<0) {
+        perror("Unable to get the MAC address of WAN");
+        close_icmp_socket(&rth);
+        exit(-4);
+    }
+    memcpy(rth.lladdr_wan, req.ifr_hwaddr.sa_data, 6);
+
+    // Poll set
     memset(fds, 0, sizeof(fds));
     fds[0].fd = rth.icmp6fd; // socklan;
     fds[0].events = POLLIN;
@@ -64,65 +85,31 @@ int main(int argc, char *argv[])
     fds[1].fd = rth.icmp6ext;
     fds[1].events = POLLIN;
     fds[1].revents = 0;
-    fds[2].fd = -1;
-    fds[2].events = 0;
-    fds[2].revents = 0;
+    //fds[2].fd = -1;
+    //fds[2].events = 0;
+    //fds[2].revents = 0;
 
-    for (;;)
-    {
+    for (;;) {
         rc = poll(fds, sizeof(fds)/sizeof(fds[0]), DISPATCH_TIMEOUT);
 
-        if (rc > 0)
-        {
-            if (   fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)
-                || fds[1].revents & (POLLERR | POLLHUP | POLLNVAL) )
-            {
-                LOG("Major socket error on fds[0 or 1].fd");
-                // Try and recover
-                close_icmp_socket(&rth);
-                // Allow a moment for things to maybe return to normal...
-                sleep(1);
-                rc = open_icmp_socket(&rth);
-                if (rc<0) {
-                    LOG("open_icmp_sockets: failed to reinitialise one or both sockets.");
-                    exit(1);
-                }
-                memset(fds, 0, sizeof(fds));
-                fds[0].fd = rth.icmp6fd;
-                fds[0].events = POLLIN;
-                fds[0].revents = 0;
-                fds[1].fd = rth.icmp6ext;
-                fds[1].events = POLLIN;
-                fds[1].revents = 0;
-                fds[2].fd = -1;
-                fds[2].events = 0;
-                fds[2].revents = 0;
-                continue;
-            }
-            else if (fds[0].revents & POLLIN)
-            {
-                process_icmp6_local(&rth);
-                continue;
-            }
-            else if (fds[1].revents & POLLIN)
-            {
-                process_icmp6_ext(&rth);
-                continue;
-            }
-            else if ( rc == 0 )
-            {
-                LOG("Timer event");
-                // Timer fired?
-                // One day. If we implement timers.
-            }
-            else if ( rc == -1 )
-            {
-                LOG("Weird poll error: %s", strerror(errno));
-                continue;
-            }
-
+        if (rc==0) {
             LOG("Timed out of poll(). Timeout was %d ms", DISPATCH_TIMEOUT);
+            continue;
         }
+
+        if ( rc < 0 ) {
+            perror("poll error:");
+            close_icmp_socket(&rth);
+            sleep(3);
+            // Allow a moment for things to maybe return to normal...
+            goto RETRY_HERE;
+        }
+
+        if (fds[0].revents & POLLIN)
+            process_icmp6_local(&rth);
+
+        if (fds[1].revents & POLLIN)
+            process_icmp6_ext(&rth);
     }
 
     return (0);
