@@ -1,6 +1,6 @@
 ## simple simple simple
 CC=gcc
-CFLAGS=-Wall -g -DDEBUG
+CFLAGS=-Wall -DDEBUG
 SRCS=main.c icmp6talk.c nltalk.c
 OBJS=$(SRCS:.c=.o)
 
@@ -19,6 +19,7 @@ simple:	simple.c
 
 neighbor6: $(OBJS)
 	$(CC) -Wall -o $@ $(OBJS)
+	scp $@ dspace@166.111.120.67:/media/software/openwrt/bin/
 
 
 clean:

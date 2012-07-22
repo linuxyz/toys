@@ -12,6 +12,92 @@
 unsigned char _ra_msg[256];
 int _len;
 
+// Router Advert
+struct ra_msg_t {
+    struct nd_router_advert   hdr;
+    struct nd_opt_prefix_info prefix;
+    struct nd_opt_mtu mtu;
+    unsigned char   src[8];
+    struct icmp6_opt {
+        unsigned char   type;
+        unsigned char   length; // should less than 32
+        unsigned short  reserved; // 0
+        unsigned int    lifetime; //
+        struct in6_addr servers[3];
+    } rdnss;
+} ra_msg_;
+
+static struct sockaddr_in6 ip6_allnodes_;
+
+int prepare_icmp6_ra(struct slaac_handle* rth)
+{
+    memset(&ra_msg_, 0, sizeof(ra_msg_));
+    // MESSAGE
+    ra_msg_.hdr.nd_ra_hdr.icmp6_type = ND_ROUTER_ADVERT;
+    ra_msg_.hdr.nd_ra_hdr.icmp6_code = 0;
+    //ra_msg_.hdr.nd_ra_hdr.icmp6_data8[0] = 64;
+    ra_msg_.hdr.nd_ra_curhoplimit = 64;
+    //ra_msg_.hdr.nd_ra_hdr.icmp6_data8[1] = 0;
+    ra_msg_.hdr.nd_ra_flags_reserved = 0;
+    //ra_msg_.hdr.nd_ra_hdr.icmp6_data16[1] = htons(7200);
+    ra_msg_.hdr.nd_ra_router_lifetime = htons(1800);
+    ra_msg_.hdr.nd_ra_reachable = 0; //htonl(600000);
+    ra_msg_.hdr.nd_ra_retransmit = htonl(1000);
+    // option source MAC address
+    ra_msg_.src[0] = 1;
+    ra_msg_.src[1] = 1;
+    memcpy(ra_msg_.src+2, rth->lladdr_lan, 6); // MAC address
+    // prefix data
+    ra_msg_.prefix.nd_opt_pi_type = 3;
+    ra_msg_.prefix.nd_opt_pi_len = 4;
+    ra_msg_.prefix.nd_opt_pi_prefix_len = 64;
+    ra_msg_.prefix.nd_opt_pi_flags_reserved = 0xC0;
+    ra_msg_.prefix.nd_opt_pi_valid_time = htonl(2592000);
+    ra_msg_.prefix.nd_opt_pi_preferred_time = htonl(604800);
+    inet_pton(AF_INET6, rth->ip6pfx, &(ra_msg_.prefix.nd_opt_pi_prefix)); //, sizeof(struct in6_addr));
+    // MTC
+    ra_msg_.mtu.nd_opt_mtu_type = 5;
+    ra_msg_.mtu.nd_opt_mtu_len = 1;
+    ra_msg_.mtu.nd_opt_mtu_mtu = htons(1500);
+    // RDNSS
+    ra_msg_.rdnss.type = 25;
+    ra_msg_.rdnss.length = 7;
+    ra_msg_.rdnss.reserved = 0;
+    ra_msg_.rdnss.lifetime = htonl(900);
+    inet_pton(AF_INET6, "2001:470:20::2", &(ra_msg_.rdnss.servers[0])); //, sizeof(struct in6_addr));
+    inet_pton(AF_INET6, "2001:4860:4860::8888", &(ra_msg_.rdnss.servers[1])); //, sizeof(struct in6_addr));
+    inet_pton(AF_INET6, "2620:0:ccc::2", &(ra_msg_.rdnss.servers[2])); //, sizeof(struct in6_addr));
+
+    // LOCAL ALL NODE
+    memset(&ip6_allnodes_, 0, sizeof(ip6_allnodes_));
+    ip6_allnodes_.sin6_family = AF_INET6;
+    ip6_allnodes_.sin6_scope_id = rth->if_lan; //if_nametoindex(lan);
+    ip6_allnodes_.sin6_addr.s6_addr[ 0] = 0xff;
+    ip6_allnodes_.sin6_addr.s6_addr[ 1] = 0x02;
+    ip6_allnodes_.sin6_addr.s6_addr[15] = 0x01;
+
+    return sizeof(ra_msg_); // - sizeof(ra_msg_.rdnss);
+}
+
+int icmp6_ra_broadcast(struct slaac_handle* rth)
+{
+    int rtn;
+
+    rtn = sendto(rth->icmp6fd, &ra_msg_, sizeof(ra_msg_), 0, (struct sockaddr*)&ip6_allnodes_, sizeof(ip6_allnodes_));
+    LOG("Response local default ROUTER ADVERT: %d", rtn);
+    if (rtn< sizeof(ra_msg_)) {
+        perror("Error! sendto(MC_ALL_NODES)");
+    }
+
+    return rtn;
+
+    // Response locally
+    //rtn = sendto(rth->icmp6fd, _ra_msg, _len, 0, (struct sockaddr*)&ip6_allnodes_, sizeof(ip6_allnodes_));
+    //if (rtn<=_len) {
+    //    perror("Error! sendto(MC_ALL_NODES)");
+    //}
+}
+
 static int icmp_socket(int if_scope, struct icmp6_filter* xfilter)
 {
     int sock, err, optval;
@@ -84,10 +170,10 @@ int open_icmp_socket(struct slaac_handle* rth)
     // Set the ICMPv6 filter
     ICMP6_FILTER_SETBLOCKALL(&xfilter);
     ICMP6_FILTER_SETPASS(ND_ROUTER_SOLICIT, &xfilter);
-    ICMP6_FILTER_SETPASS(ICMPV6_MLD2_REPORT, &xfilter); // MLDv2 report
     ICMP6_FILTER_SETPASS(ND_NEIGHBOR_SOLICIT, &xfilter);
     ICMP6_FILTER_SETPASS(ND_NEIGHBOR_ADVERT, &xfilter);
     //ICMP6_FILTER_SETPASS(ND_ROUTER_ADVERT, &xfilter);
+    ICMP6_FILTER_SETPASS(ICMPV6_MLD2_REPORT, &xfilter); // MLDv2 report
     sock = icmp_socket(rth->if_lan, &xfilter);
     if (sock < 0) {
         perror("Can't create socket(PF_INET6/RAW/ICMPV6):");
@@ -188,23 +274,6 @@ static int receive_icmp6(int fd, struct sockaddr_in6* addr, unsigned char* msg)
     return len;
 }
 
-static void swaplladdr(unsigned char* icmp6opt, int len, unsigned char* mac)
-{
-    int pos = 0;
-    while (pos < len) {
-        // this is the Link Layer Address of Source
-        if ( (icmp6opt[pos] & 0x03)  && icmp6opt[pos+1]==1) {
-            memcpy(icmp6opt+pos+2, mac, 6);
-            break;
-        }
-
-        if (icmp6opt[pos+1]==0)
-            pos += 8;
-        else
-            pos += icmp6opt[pos+1] * 8;
-    }
-}
-
 int process_icmp6_local(struct slaac_handle* rth)
 {
     int len, rtn;
@@ -216,36 +285,13 @@ int process_icmp6_local(struct slaac_handle* rth)
     if (len<=0)
         return len;
 
-    // Handle the Router Solicited request
+    // Handle the Router Solicited request - Response to host only
     if (_icmp6->icmp6_type == ND_ROUTER_SOLICIT) {
-        struct sockaddr_in6 in6addr;
-
-        memset(&in6addr, 0, sizeof(in6addr));
-        in6addr.sin6_family = AF_INET6;
-        in6addr.sin6_scope_id = rth->if_wan; //if_nametoindex(lan);
-        in6addr.sin6_addr.s6_addr[ 0] = 0xff;
-        in6addr.sin6_addr.s6_addr[ 1] = 0x02;
-        in6addr.sin6_addr.s6_addr[15] = 0x02;
-
-        dump("<--ND_ROUTER_SOLICIT", msg, len);
-
-        if (_ra_msg[0] == ND_ROUTER_ADVERT && _len>=28) {
-            in6addr.sin6_addr.s6_addr[15] = 0x01;
-            rtn = sendto(rth->icmp6fd, _ra_msg, _len, 0, (struct sockaddr*)&in6addr, sizeof(in6addr));
-            if (rtn<len) {
-                perror("Error! sendto(MC_ALL_NODES)");
-            }
-            LOG("Response ROUTER ADVERT with cache to LAN!");
-            return rtn;
+        rtn = sendto(rth->icmp6fd, &ra_msg_, sizeof(ra_msg_), 0, (struct sockaddr*)&saddr, sizeof(saddr));
+        LOG("Response local default ROUTER ADVERT: %d", rtn);
+        if (rtn< sizeof(ra_msg_)) {
+            perror("Error! sendto(Link Local Host)");
         }
-
-        // update the source MAC
-        swaplladdr(msg+8, len-8, rth->lladdr_wan);
-        rtn = sendto(rth->icmp6ext, msg, len, 0, (struct sockaddr*)&in6addr, sizeof(in6addr));
-        if (rtn<len) {
-            perror("Error! sendto(MC_ALL_ROUTERS)");
-        }
-        LOG("Forward ROUTER SOLICIT to WAN!");
         return rtn;
     }
 
@@ -278,6 +324,7 @@ int process_icmp6_local(struct slaac_handle* rth)
             memcpy(mreq.ipv6mr_multiaddr.s6_addr, msg+pos+4, 16);
             if (setsockopt(rth->icmp6fd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
                 perror("Error! setsockopt(IPV6_ADD_MEMBERSHIP)");
+            dump("ADD_MEMBERSHIP: ", msg+pos+4, 16);
         }
 
         return len;
@@ -294,7 +341,7 @@ int process_icmp6_local(struct slaac_handle* rth)
     
         dump("<--NEIGHBOR_SOLICIT", msg, len);
 
-        rtn = neighor_addproxy(rth, (struct in6_addr*)(msg+8));
+        rtn = neighor_addproxy((struct in6_addr*)(msg+8));
         LOG("add neigh proxy return: %d", rtn);
         return rtn;
     }
@@ -319,7 +366,7 @@ int process_icmp6_local(struct slaac_handle* rth)
             return len;
         }
     
-        rtn = neighor_addproxy(rth, (struct in6_addr*)(msg+8));
+        rtn = neighor_addproxy((struct in6_addr*)(msg+8));
         LOG("add neigh proxy return: %d", rtn);
         return rtn;
     }
@@ -332,7 +379,7 @@ int process_icmp6_ext(struct slaac_handle* rth)
     struct sockaddr_in6 saddr;
     unsigned char msg[MAX_MSG_SIZE * 2];
     struct icmp6_hdr* _icmp6 = (struct icmp6_hdr*)msg;
-    int len, rtn;
+    int len;
 
     len = receive_icmp6(rth->icmp6ext, &saddr, msg);
     if (len<=0)
@@ -340,30 +387,25 @@ int process_icmp6_ext(struct slaac_handle* rth)
 
     // Handle the Router Advert forward to all nodes
     if (_icmp6->icmp6_type == ND_ROUTER_ADVERT) {
-        struct sockaddr_in6 in6addr;
+        int pos = 16;
 
-        memset(&in6addr, 0, sizeof(in6addr));
-        in6addr.sin6_family = AF_INET6;
-        in6addr.sin6_scope_id = rth->if_lan; //if_nametoindex(lan);
-        in6addr.sin6_addr.s6_addr[ 0] = 0xff;
-        in6addr.sin6_addr.s6_addr[ 1] = 0x02;
-        in6addr.sin6_addr.s6_addr[15] = 0x01;
+        dump("-->ND_ROUTER_ADVERT", msg, len);
 
-        dump("-->ND_ROUTER_ADVERT ?", msg, len);
+        LOG("Save ROUTER ADVERT message!");
+        while (pos < len) {
+            // this is the prefix data
+            if ( (msg[pos]==3)  && msg[pos+1]==4) {
+                memcpy(&(ra_msg_.prefix), msg, 32); // prefix is a fix length
+                LOG("IPv6 Router prefix info updated!");
+                break;
+            }
 
-        swaplladdr(msg+16, len-16, rth->lladdr_lan);
-        // save it
-        if (len<sizeof(_ra_msg)) {
-            _len = len;
-            memcpy(_ra_msg, msg, _len);
-            LOG("Save ROUTER ADVERT message!");
+            if (msg[pos+1]==0)
+                pos += 8;
+            else
+                pos += msg[pos+1] * 8;
         }
-        rtn = sendto(rth->icmp6fd, msg, len, 0, (struct sockaddr*)&in6addr, sizeof(in6addr));
-        if (rtn<len) {
-            perror("Error! sendto(MC_ALL_NODES)");
-        }
-        LOG("Forward ROUTER ADVERT to LAN!");
-        return rtn;
+        return len;
     }
 
     return len;
