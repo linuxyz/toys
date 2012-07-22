@@ -395,7 +395,7 @@ int process_icmp6_ext(struct slaac_handle* rth)
         while (pos < len) {
             // this is the prefix data
             if ( (msg[pos]==3)  && msg[pos+1]==4) {
-                memcpy(&(ra_msg_.prefix), msg, 32); // prefix is a fix length
+                memcpy(&(ra_msg_.prefix), msg+pos, 32); // prefix is a fix length
                 LOG("IPv6 Router prefix info updated!");
                 break;
             }
