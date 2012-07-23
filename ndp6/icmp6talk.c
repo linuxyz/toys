@@ -1,5 +1,7 @@
 ﻿#include "slaac6.h"
 
+#include <net/if.h>
+#include <sys/ioctl.h>
 #include <netinet/icmp6.h>
 //#include <linux/icmpv6.h>
 
@@ -7,10 +9,6 @@
 #define MLD2_MODE_IS_EXCLUDE    2
 #define MLD2_CHANGE_TO_EXCLUDE  4
 
-
-// We use it to save the Router Advert message
-unsigned char _ra_msg[256];
-int _len;
 
 // Router Advert
 struct ra_msg_t {
@@ -28,12 +26,14 @@ struct ra_msg_t {
 } ra_msg_;
 
 static struct sockaddr_in6 ip6_allnodes_;
+static struct sockaddr_in6 ip6_allrouters_;
 
 int prepare_icmp6_ra(struct slaac_handle* rth)
 {
     memset(&ra_msg_, 0, sizeof(ra_msg_));
     // MESSAGE
-    ra_msg_.hdr.nd_ra_hdr.icmp6_type = ND_ROUTER_ADVERT;
+    //ra_msg_.hdr.nd_ra_hdr.icmp6_type = ND_ROUTER_ADVERT;
+    ra_msg_.hdr.nd_ra_hdr.icmp6_type = 0; // it will be reset after receive the RA.
     ra_msg_.hdr.nd_ra_hdr.icmp6_code = 0;
     //ra_msg_.hdr.nd_ra_hdr.icmp6_data8[0] = 64;
     ra_msg_.hdr.nd_ra_curhoplimit = 64;
@@ -54,7 +54,10 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     ra_msg_.prefix.nd_opt_pi_flags_reserved = 0xC0;
     ra_msg_.prefix.nd_opt_pi_valid_time = htonl(2592000);
     ra_msg_.prefix.nd_opt_pi_preferred_time = htonl(604800);
-    inet_pton(AF_INET6, rth->ip6pfx, &(ra_msg_.prefix.nd_opt_pi_prefix)); //, sizeof(struct in6_addr));
+    if (inet_pton(AF_INET6, rth->ip6pfx, &(ra_msg_.prefix.nd_opt_pi_prefix))>0) {
+        // User specify a valid prefix - enable the cache
+        ra_msg_.hdr.nd_ra_hdr.icmp6_type = ND_ROUTER_ADVERT;
+    }
     // MTC
     ra_msg_.mtu.nd_opt_mtu_type = 5;
     ra_msg_.mtu.nd_opt_mtu_len = 1;
@@ -76,6 +79,14 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     ip6_allnodes_.sin6_addr.s6_addr[ 1] = 0x02;
     ip6_allnodes_.sin6_addr.s6_addr[15] = 0x01;
 
+    // LOCAL ALL NODE
+    memset(&ip6_allrouters_, 0, sizeof(ip6_allnodes_));
+    ip6_allrouters_.sin6_family = AF_INET6;
+    ip6_allrouters_.sin6_scope_id = rth->if_wan; //if_nametoindex(wan);
+    ip6_allrouters_.sin6_addr.s6_addr[ 0] = 0xff;
+    ip6_allrouters_.sin6_addr.s6_addr[ 1] = 0x02;
+    ip6_allrouters_.sin6_addr.s6_addr[15] = 0x02;
+
     return sizeof(ra_msg_); // - sizeof(ra_msg_.rdnss);
 }
 
@@ -90,12 +101,6 @@ int icmp6_ra_broadcast(struct slaac_handle* rth)
     }
 
     return rtn;
-
-    // Response locally
-    //rtn = sendto(rth->icmp6fd, _ra_msg, _len, 0, (struct sockaddr*)&ip6_allnodes_, sizeof(ip6_allnodes_));
-    //if (rtn<=_len) {
-    //    perror("Error! sendto(MC_ALL_NODES)");
-    //}
 }
 
 static int icmp_socket(int if_scope, struct icmp6_filter* xfilter)
@@ -166,6 +171,9 @@ int open_icmp_socket(struct slaac_handle* rth)
     int sock; //, optval;
     struct icmp6_filter xfilter;
     struct ipv6_mreq mreq;
+    struct ifreq    req;
+    struct icmp6_hdr icmp6_rs;
+    unsigned char icmp6_src[8];
 
     // Set the ICMPv6 filter
     ICMP6_FILTER_SETBLOCKALL(&xfilter);
@@ -219,10 +227,32 @@ int open_icmp_socket(struct slaac_handle* rth)
     rth->icmp6ext = sock;
     LOG("WAN ICMPv6 socket OK.");
 
-    // Mark it
-    _ra_msg[0] = 0;
+    // Get the MAC addresses
+    strcpy(req.ifr_name, rth->ifn_lan);
+    if (ioctl(rth->icmp6fd, SIOCGIFHWADDR, &req)<0) {
+        perror("Unable to get the MAC address of LAN");
+        close_icmp_socket(rth);
+        return -__LINE__;
+    }
+    memcpy(rth->lladdr_lan, req.ifr_hwaddr.sa_data, 6);
 
-    return 0;
+    // Get the MAC addresses
+    strcpy(req.ifr_name, rth->ifn_wan);
+    if (ioctl(rth->icmp6ext, SIOCGIFHWADDR, &req)<0) {
+        perror("Unable to get the MAC address of WAN");
+        close_icmp_socket(rth);
+        return -__LINE__;
+    }
+    memcpy(rth->lladdr_wan, req.ifr_hwaddr.sa_data, 6);
+
+    // Send ROUTER Solicit
+    memset(&icmp6_rs, 0, sizeof(icmp6_rs));
+    icmp6_rs.icmp6_type = ND_ROUTER_SOLICIT;
+    icmp6_src[0] = 1;   // option src address
+    icmp6_src[1] = 1;   // option length
+    memcpy(icmp6_src+2, rth->lladdr_wan, 6);    // MAC address
+    return sendto(rth->icmp6ext, &icmp6_rs, sizeof(icmp6_rs)+sizeof(icmp6_src), 0,
+                  (struct sockaddr*)&ip6_allrouters_, sizeof(ip6_allrouters_));
 }
 
 // Using local variant directly!
@@ -287,6 +317,11 @@ int process_icmp6_local(struct slaac_handle* rth)
 
     // Handle the Router Solicited request - Response to host only
     if (_icmp6->icmp6_type == ND_ROUTER_SOLICIT) {
+        // ignore it if there isn't ROUTER ADVERT,
+        if (ra_msg_.hdr.nd_ra_hdr.icmp6_type != ND_ROUTER_ADVERT)
+            return len;
+
+        // Response RA
         rtn = sendto(rth->icmp6fd, &ra_msg_, sizeof(ra_msg_), 0, (struct sockaddr*)&saddr, sizeof(saddr));
         LOG("Response local default ROUTER ADVERT: %d", rtn);
         if (rtn< sizeof(ra_msg_)) {
@@ -394,8 +429,10 @@ int process_icmp6_ext(struct slaac_handle* rth)
         LOG("Save ROUTER ADVERT message!");
         while (pos < len) {
             // this is the prefix data
-            if ( (msg[pos]==3)  && msg[pos+1]==4) {
+            if ((msg[pos]==3)  && msg[pos+1]==4) {
                 memcpy(&(ra_msg_.prefix), msg+pos, 32); // prefix is a fix length
+                // Enable the Router Advert
+                ra_msg_.hdr.nd_ra_hdr.icmp6_type = ND_ROUTER_ADVERT;
                 LOG("IPv6 Router prefix info updated!");
                 break;
             }
@@ -405,7 +442,6 @@ int process_icmp6_ext(struct slaac_handle* rth)
             else
                 pos += msg[pos+1] * 8;
         }
-        return len;
     }
 
     return len;

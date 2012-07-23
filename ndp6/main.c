@@ -2,7 +2,6 @@
 
 #include <poll.h>
 #include <net/if.h>
-#include <sys/ioctl.h>
 
 void dump(const char* title, void* msg, int len)
 {
@@ -29,7 +28,6 @@ int main(int argc, char *argv[])
                 .if_wan = -1, .if_lan = -1 };
     int             rc;
     struct pollfd   fds[2];
-    struct ifreq    req;
 
     if (argc>=3) {
         strncpy(rth.ifn_lan, argv[1], 16);
@@ -38,18 +36,17 @@ int main(int argc, char *argv[])
     if (argc>=4) {
         strncpy(rth.ip6pfx, argv[3], sizeof(rth.ip6pfx));
     } else {
-        // use default - can be updated by Router Advert
-        strncpy(rth.ip6pfx, "2402:f000:5:2d01::", sizeof(rth.ip6pfx));
+        rth.ip6pfx[0] = 0;
     }
 
     // Interface to ID
     rth.if_lan = if_nametoindex(rth.ifn_lan);
     rth.if_wan = if_nametoindex(rth.ifn_wan);
     if (rth.if_lan<=0 || rth.if_wan<=0) {
-        printf("usage: %s <lan> <wan> <IPv6::prefix>\n", argv[0]);
+        printf("usage: %s <lan> <wan> [IPv6::prefix]\n", argv[0]);
         exit(-1);
     }
-    LOG("PROXY LAN:%s#%d to WAN:%s#%d as %s", rth.ifn_lan, rth.if_lan, rth.ifn_wan, rth.if_wan, rth.ip6pfx);
+    LOG("PROXY LAN:%s#%d to WAN:%s#%d [%s]", rth.ifn_lan, rth.if_lan, rth.ifn_wan, rth.if_wan, rth.ip6pfx);
 
     rc = open_netlink_socket(&rth);
     if (rc<0) {
@@ -57,6 +54,8 @@ int main(int argc, char *argv[])
         exit (-2);
     }
 
+    // RA message
+    prepare_icmp6_ra(&rth);
 
 RETRY_HERE:
     rc = open_icmp_socket(&rth);
@@ -64,27 +63,6 @@ RETRY_HERE:
         LOG("Can't create ICMPv6 socket: %d", rc);
         exit(-3);
     }
-
-    // Get the MAC addresses
-    strcpy(req.ifr_name, rth.ifn_lan);
-    if (ioctl(rth.icmp6fd, SIOCGIFHWADDR, &req)<0) {
-        perror("Unable to get the MAC address of LAN");
-        close_icmp_socket(&rth);
-        exit(-4);
-    }
-    memcpy(rth.lladdr_lan, req.ifr_hwaddr.sa_data, 6);
-
-    // Get the MAC addresses
-    strcpy(req.ifr_name, rth.ifn_wan);
-    if (ioctl(rth.icmp6ext, SIOCGIFHWADDR, &req)<0) {
-        perror("Unable to get the MAC address of WAN");
-        close_icmp_socket(&rth);
-        exit(-4);
-    }
-    memcpy(rth.lladdr_wan, req.ifr_hwaddr.sa_data, 6);
-
-    // RA message
-    prepare_icmp6_ra(&rth);
 
     // Poll set
     memset(fds, 0, sizeof(fds));
@@ -94,9 +72,6 @@ RETRY_HERE:
     fds[1].fd = rth.icmp6ext;
     fds[1].events = POLLIN;
     fds[1].revents = 0;
-    //fds[2].fd = -1;
-    //fds[2].events = 0;
-    //fds[2].revents = 0;
 
     for (;;) {
         rc = poll(fds, sizeof(fds)/sizeof(fds[0]), DISPATCH_TIMEOUT);
@@ -127,4 +102,3 @@ RETRY_HERE:
 
 //////////////////////////////
 //# vim:ts=4
-

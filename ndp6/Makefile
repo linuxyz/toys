@@ -19,7 +19,6 @@ simple:	simple.c
 
 neighbor6: $(OBJS)
 	$(CC) -Wall -o $@ $(OBJS)
-	scp $@ dspace@166.111.120.67:/media/software/openwrt/bin/
 
 
 clean:
