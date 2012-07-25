@@ -3,7 +3,7 @@
 #include <poll.h>
 #include <net/if.h>
 
-void dump(const char* title, void* msg, int len)
+void DUMP(const char* title, void* msg, int len)
 {
 #ifdef DEBUG    
     int i;
@@ -54,9 +54,6 @@ int main(int argc, char *argv[])
         exit (-2);
     }
 
-    // RA message
-    prepare_icmp6_ra(&rth);
-
 RETRY_HERE:
     rc = open_icmp_socket(&rth);
     if (rc<0) {
@@ -74,10 +71,10 @@ RETRY_HERE:
     fds[1].revents = 0;
 
     for (;;) {
-        rc = poll(fds, sizeof(fds)/sizeof(fds[0]), DISPATCH_TIMEOUT);
+        rc = poll(fds, sizeof(fds)/sizeof(fds[0]), RA_RETRANS_TIMER);
 
         if (rc==0) {
-            LOG("Timed out of poll(). Timeout was %d ms", DISPATCH_TIMEOUT);
+            LOG("Timed out of poll(). Timeout was %d ms", RA_RETRANS_TIMER);
             icmp6_ra_broadcast(&rth);
             continue;
         }

@@ -23,26 +23,31 @@ struct ra_msg_t {
         unsigned int    lifetime; //
         struct in6_addr servers[3];
     } rdnss;
-} ra_msg_;
+};
+
+static struct ra_msg_t ra_msg_ = {
+    .hdr = { .nd_ra_hdr = {.icmp6_type = 0}}
+};
 
 static struct sockaddr_in6 ip6_allnodes_;
 static struct sockaddr_in6 ip6_allrouters_;
 
 int prepare_icmp6_ra(struct slaac_handle* rth)
 {
+    if (ra_msg_.hdr.nd_ra_hdr.icmp6_type == ND_ROUTER_ADVERT)
+        return 0;
+
     memset(&ra_msg_, 0, sizeof(ra_msg_));
+
     // MESSAGE
     //ra_msg_.hdr.nd_ra_hdr.icmp6_type = ND_ROUTER_ADVERT;
-    ra_msg_.hdr.nd_ra_hdr.icmp6_type = 0; // it will be reset after receive the RA.
     ra_msg_.hdr.nd_ra_hdr.icmp6_code = 0;
-    //ra_msg_.hdr.nd_ra_hdr.icmp6_data8[0] = 64;
     ra_msg_.hdr.nd_ra_curhoplimit = 64;
-    //ra_msg_.hdr.nd_ra_hdr.icmp6_data8[1] = 0;
     ra_msg_.hdr.nd_ra_flags_reserved = 0;
-    //ra_msg_.hdr.nd_ra_hdr.icmp6_data16[1] = htons(7200);
-    ra_msg_.hdr.nd_ra_router_lifetime = htons(1800);
-    ra_msg_.hdr.nd_ra_reachable = 0; //htonl(600000);
-    ra_msg_.hdr.nd_ra_retransmit = htonl(1000);
+    //ra_msg_.hdr.nd_ra_router_lifetime = htons(3000);
+    //ra_msg_.hdr.nd_ra_reachable = htonl(60000);
+    //ra_msg_.hdr.nd_ra_retransmit = htonl(3000);
+
     // option source MAC address
     ra_msg_.src[0] = 1;
     ra_msg_.src[1] = 1;
@@ -52,8 +57,8 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     ra_msg_.prefix.nd_opt_pi_len = 4;
     ra_msg_.prefix.nd_opt_pi_prefix_len = 64;
     ra_msg_.prefix.nd_opt_pi_flags_reserved = 0xC0;
-    ra_msg_.prefix.nd_opt_pi_valid_time = htonl(2592000);
-    ra_msg_.prefix.nd_opt_pi_preferred_time = htonl(604800);
+    ra_msg_.prefix.nd_opt_pi_valid_time = htonl(604800);
+    ra_msg_.prefix.nd_opt_pi_preferred_time = htonl(86400);
     if (inet_pton(AF_INET6, rth->ip6pfx, &(ra_msg_.prefix.nd_opt_pi_prefix))>0) {
         // User specify a valid prefix - enable the cache
         ra_msg_.hdr.nd_ra_hdr.icmp6_type = ND_ROUTER_ADVERT;
@@ -66,7 +71,7 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     ra_msg_.rdnss.type = 25;
     ra_msg_.rdnss.length = 7;
     ra_msg_.rdnss.reserved = 0;
-    ra_msg_.rdnss.lifetime = htonl(900);
+    ra_msg_.rdnss.lifetime = htonl(1500);
     inet_pton(AF_INET6, "2001:470:20::2", &(ra_msg_.rdnss.servers[0])); //, sizeof(struct in6_addr));
     inet_pton(AF_INET6, "2001:4860:4860::8888", &(ra_msg_.rdnss.servers[1])); //, sizeof(struct in6_addr));
     inet_pton(AF_INET6, "2620:0:ccc::2", &(ra_msg_.rdnss.servers[2])); //, sizeof(struct in6_addr));
@@ -245,6 +250,12 @@ int open_icmp_socket(struct slaac_handle* rth)
     }
     memcpy(rth->lladdr_wan, req.ifr_hwaddr.sa_data, 6);
 
+    DUMP("WAN MAC", rth->lladdr_wan, 6);
+    DUMP("LAN MAC", rth->lladdr_lan, 6);
+
+    // Prepare the ROUTER ADVERT message
+    prepare_icmp6_ra(rth);
+
     // Send ROUTER Solicit
     memset(&icmp6_rs, 0, sizeof(icmp6_rs));
     icmp6_rs.icmp6_type = ND_ROUTER_SOLICIT;
@@ -340,7 +351,7 @@ int process_icmp6_local(struct slaac_handle* rth)
         struct ipv6_mreq mreq = { .ipv6mr_interface = rth->if_lan };
     
         // refer to http://tools.ietf.org/html/rfc3810 5.2
-        dump("<--ICMPV6_MLD2_REPORT", msg, len);
+        DUMP("<--ICMPV6_MLD2_REPORT", msg, len);
 
         pos = 8;
         nmcast = ntohs(_icmp6->icmp6_data16[1]);
@@ -359,7 +370,7 @@ int process_icmp6_local(struct slaac_handle* rth)
             memcpy(mreq.ipv6mr_multiaddr.s6_addr, msg+pos+4, 16);
             if (setsockopt(rth->icmp6fd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0)
                 perror("Error! setsockopt(IPV6_ADD_MEMBERSHIP)");
-            dump("ADD_MEMBERSHIP: ", msg+pos+4, 16);
+            DUMP("ADD_MEMBERSHIP: ", msg+pos+4, 16);
         }
 
         return len;
@@ -374,7 +385,7 @@ int process_icmp6_local(struct slaac_handle* rth)
             return len;
         }
     
-        dump("<--NEIGHBOR_SOLICIT", msg, len);
+        DUMP("<--NEIGHBOR_SOLICIT", msg, len);
 
         rtn = neighor_addproxy((struct in6_addr*)(msg+8));
         LOG("add neigh proxy return: %d", rtn);
@@ -393,7 +404,7 @@ int process_icmp6_local(struct slaac_handle* rth)
             return len;
         }
 
-        dump("<--NEIGHBOR_ADVERT", msg, len);
+        DUMP("<--NEIGHBOR_ADVERT", msg, len);
 
         // Only do Global Unicast IPv6 Address range is 2000::/3
         if (((unsigned char)(msg[8]) & 0xE0) != 0x20) {
@@ -424,7 +435,7 @@ int process_icmp6_ext(struct slaac_handle* rth)
     if (_icmp6->icmp6_type == ND_ROUTER_ADVERT) {
         int pos = 16;
 
-        dump("-->ND_ROUTER_ADVERT", msg, len);
+        DUMP("-->ND_ROUTER_ADVERT", msg, len);
 
         LOG("Save ROUTER ADVERT message!");
         while (pos < len) {
@@ -442,6 +453,9 @@ int process_icmp6_ext(struct slaac_handle* rth)
             else
                 pos += msg[pos+1] * 8;
         }
+
+        // SEND
+        icmp6_ra_broadcast(rth);
     }
 
     return len;

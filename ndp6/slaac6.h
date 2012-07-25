@@ -17,13 +17,13 @@
 #define LOG(...)
 #endif
 
-void dump(const char* title, void* msg, int len);
+void DUMP(const char* title, void* msg, int len);
 
 #define HWADDR_MAX          16
 #define MAX_PKT_BUFF        1500
 #define MAX_MSG_SIZE        2048
 #define INTERFACE_STRLEN    12
-#define DISPATCH_TIMEOUT    1000000          // 1000 seconds
+#define RA_RETRANS_TIMER    1000000          // 1000 seconds
 
 struct slaac_handle
 {

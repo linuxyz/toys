@@ -40,8 +40,8 @@ static int rtnl_talk(struct nlmsghdr *n, struct nlmsghdr *answer)
     if (answer == NULL)
         n->nlmsg_flags |= NLM_F_ACK;
 
-    dump("nladdr", &nladdr, sizeof(nladdr));
-    dump("nlmsg", n, n->nlmsg_len);
+    DUMP("nladdr", &nladdr, sizeof(nladdr));
+    DUMP("nlmsg", n, n->nlmsg_len);
 
     /*msg here*/
     status = sendmsg(handle_.nlfd, &msg, 0);
