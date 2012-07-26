@@ -15,11 +15,9 @@ void DUMP(const char* title, void* msg, int len)
     }
     fprintf(stderr, "\n==== END(%s) ====\n", title);
 #else
-    msg;
-    len;
+    title, msg, len;
 #endif
 }
-
 
 int main(int argc, char *argv[])
 {

@@ -44,9 +44,9 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     ra_msg_.hdr.nd_ra_hdr.icmp6_code = 0;
     ra_msg_.hdr.nd_ra_curhoplimit = 64;
     ra_msg_.hdr.nd_ra_flags_reserved = 0;
-    //ra_msg_.hdr.nd_ra_router_lifetime = htons(3000);
-    //ra_msg_.hdr.nd_ra_reachable = htonl(60000);
-    //ra_msg_.hdr.nd_ra_retransmit = htonl(3000);
+    ra_msg_.hdr.nd_ra_router_lifetime = htons(1800);
+    ra_msg_.hdr.nd_ra_reachable =  htonl(30000);
+    ra_msg_.hdr.nd_ra_retransmit = htonl(1000);
 
     // option source MAC address
     ra_msg_.src[0] = 1;
