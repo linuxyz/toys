@@ -44,7 +44,7 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     ra_msg_.hdr.nd_ra_hdr.icmp6_code = 0;
     ra_msg_.hdr.nd_ra_curhoplimit = 64;
     ra_msg_.hdr.nd_ra_flags_reserved = 0;
-    ra_msg_.hdr.nd_ra_router_lifetime = htons(1800);
+    ra_msg_.hdr.nd_ra_router_lifetime = htons(RA_RETRANS_TIMER*10); //htons(1800);
     ra_msg_.hdr.nd_ra_reachable =  htonl(30000);
     ra_msg_.hdr.nd_ra_retransmit = htonl(1000);
 
@@ -97,10 +97,14 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
 
 int icmp6_ra_broadcast(struct slaac_handle* rth)
 {
-    int rtn;
+    int rtn = 0;
+
+    // ensure there is a valid RA message
+    if (ra_msg_.hdr.nd_ra_hdr.icmp6_type != ND_ROUTER_ADVERT)
+        return rtn;
 
     rtn = sendto(rth->icmp6fd, &ra_msg_, sizeof(ra_msg_), 0, (struct sockaddr*)&ip6_allnodes_, sizeof(ip6_allnodes_));
-    LOG("Response local default ROUTER ADVERT: %d", rtn);
+    LOG("ROUTER ADVERT: %d", rtn);
     if (rtn< sizeof(ra_msg_)) {
         perror("Error! sendto(MC_ALL_NODES)");
     }

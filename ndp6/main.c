@@ -1,5 +1,6 @@
 #include "slaac6.h"
 
+#include <time.h>
 #include <poll.h>
 #include <net/if.h>
 
@@ -15,7 +16,7 @@ void DUMP(const char* title, void* msg, int len)
     }
     fprintf(stderr, "\n==== END(%s) ====\n", title);
 #else
-    title, msg, len;
+    fprintf(stdout, "[neighbor6] DUMP: %s %p/%d\n", title, msg, len);
 #endif
 }
 
@@ -25,6 +26,7 @@ int main(int argc, char *argv[])
                 .icmp6fd = -1, .icmp6ext = -1,
                 .if_wan = -1, .if_lan = -1 };
     int             rc;
+    time_t          last;
     struct pollfd   fds[2];
 
     if (argc>=3) {
@@ -68,13 +70,16 @@ RETRY_HERE:
     fds[1].events = POLLIN;
     fds[1].revents = 0;
 
-    for (;;) {
-        rc = poll(fds, sizeof(fds)/sizeof(fds[0]), RA_RETRANS_TIMER);
+    // Keep the time
+    time(&last);
 
-        if (rc==0) {
-            LOG("Timed out of poll(). Timeout was %d ms", RA_RETRANS_TIMER);
+    for (;;) {
+        rc = poll(fds, sizeof(fds)/sizeof(fds[0]), RA_RETRANS_TIMER * 1000);
+
+        if (time(NULL)-last>=RA_RETRANS_TIMER) {
             icmp6_ra_broadcast(&rth);
-            continue;
+            // remember the time
+            time(&last);
         }
 
         if ( rc < 0 ) {
@@ -83,6 +88,12 @@ RETRY_HERE:
             sleep(3);
             // Allow a moment for things to maybe return to normal...
             goto RETRY_HERE;
+        }
+
+        // It is a timeout
+        if (rc==0) {
+            //LOG("Timed out of poll(). Timeout was %d ms", RA_RETRANS_TIMER);
+            continue;
         }
 
         if (fds[0].revents & POLLIN)
