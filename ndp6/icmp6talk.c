@@ -44,7 +44,7 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     ra_msg_.hdr.nd_ra_hdr.icmp6_code = 0;
     ra_msg_.hdr.nd_ra_curhoplimit = 64;
     ra_msg_.hdr.nd_ra_flags_reserved = 0;
-    ra_msg_.hdr.nd_ra_router_lifetime = htons(RA_RETRANS_TIMER*10); //htons(1800);
+    ra_msg_.hdr.nd_ra_router_lifetime = htons(RA_RETRANS_TIMER*3); //htons(1800);
     ra_msg_.hdr.nd_ra_reachable =  htonl(30000);
     ra_msg_.hdr.nd_ra_retransmit = htonl(1000);
 
@@ -144,6 +144,14 @@ static int icmp_socket(int if_scope, struct icmp6_filter* xfilter)
         close(sock);
         return -__LINE__;
     }
+
+    // Set the Hop Limits to 255
+    optval = 255;
+    if (setsockopt(sock, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &optval, sizeof(optval)) <0 )
+        perror("setsockopt IPV6_UNICAST_HOPS");
+    optval = 255;
+    if (setsockopt(sock, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &optval, sizeof(optval)) <0 )
+        perror("setsockopt IPV6_UNICAST_HOPS");
 
     // Set IPV6_MULTICAST_LOOP
     optval = 0;
@@ -276,7 +284,6 @@ static int receive_icmp6(int fd, struct sockaddr_in6* addr, unsigned char* msg)
 {
     struct iovec iov;
     struct msghdr mhdr;
-    char ipstr[64]; // IP address
     int len = 0;
 
     memset(&iov, 0, sizeof(iov));
@@ -298,16 +305,19 @@ static int receive_icmp6(int fd, struct sockaddr_in6* addr, unsigned char* msg)
     }
 
 #ifdef DEBUG
-    sprintf(ipstr, "%x:%x:%x:%x:%x:%x:%x:%x",
-            ntohs(addr->sin6_addr.s6_addr16[0]),
-            ntohs(addr->sin6_addr.s6_addr16[1]),
-            ntohs(addr->sin6_addr.s6_addr16[2]),
-            ntohs(addr->sin6_addr.s6_addr16[3]),
-            ntohs(addr->sin6_addr.s6_addr16[4]),
-            ntohs(addr->sin6_addr.s6_addr16[5]),
-            ntohs(addr->sin6_addr.s6_addr16[6]),
-            ntohs(addr->sin6_addr.s6_addr16[7]));
-    LOG("ICMPv6 from %s type:%d code:%d", ipstr, msg[0], msg[1]);
+    {
+        char ipstr[64]; // IP address
+        sprintf(ipstr, "%x:%x:%x:%x:%x:%x:%x:%x",
+                ntohs(addr->sin6_addr.s6_addr16[0]),
+                ntohs(addr->sin6_addr.s6_addr16[1]),
+                ntohs(addr->sin6_addr.s6_addr16[2]),
+                ntohs(addr->sin6_addr.s6_addr16[3]),
+                ntohs(addr->sin6_addr.s6_addr16[4]),
+                ntohs(addr->sin6_addr.s6_addr16[5]),
+                ntohs(addr->sin6_addr.s6_addr16[6]),
+                ntohs(addr->sin6_addr.s6_addr16[7]));
+        LOG("ICMPv6 from %s type:%d code:%d", ipstr, msg[0], msg[1]);
+    }
 #endif
 
     /* Impossible.. But let's not take chances */

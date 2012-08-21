@@ -23,7 +23,7 @@ void DUMP(const char* title, void* msg, int len);
 #define MAX_PKT_BUFF        1500
 #define MAX_MSG_SIZE        2048
 #define INTERFACE_STRLEN    12
-#define RA_RETRANS_TIMER    180
+#define RA_RETRANS_TIMER    300
 
 struct slaac_handle
 {
