@@ -123,7 +123,7 @@ static int icmp_socket(int if_scope, struct icmp6_filter* xfilter)
     sock = socket(PF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
     if (sock < 0) {
         perror("Can't create socket(PF_INET6/RAW/ICMPV6):");
-        return (-1);
+        return -__LINE__;
     }
 
     // Bind the socket to the interface we're interested in
@@ -279,7 +279,6 @@ int open_icmp_socket(struct slaac_handle* rth)
 }
 
 // Using local variant directly!
-
 static int receive_icmp6(int fd, struct sockaddr_in6* addr, unsigned char* msg)
 {
     struct iovec iov;
@@ -415,7 +414,10 @@ int process_icmp6_local(struct slaac_handle* rth)
             || saddr.sin6_addr.s6_addr32[2] != 0
             || saddr.sin6_addr.s6_addr32[3] != 0 )
         {
-            return len;
+            // iOS6 now send NA from ipv6 local address, but with src MAC option
+            // the message length should be >=32
+            if (len<32)
+                return len;
         }
 
         DUMP("<--NEIGHBOR_ADVERT", msg, len);
