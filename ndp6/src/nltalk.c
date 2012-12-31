@@ -10,6 +10,7 @@ static struct nl_handle {
     __u32  seq;
     __u32  dump;
     int    if_wan;
+    int    if_lan;
 } handle_;
 
 static int rtnl_talk(struct nlmsghdr *n, struct nlmsghdr *answer)
@@ -158,31 +159,33 @@ static int addattr_l(struct nlmsghdr *n, int maxlen, int type, const void *data,
 
 int netlink_addroute(struct in6_addr *ip6)
 {
-	struct {
-		struct nlmsghdr 	n;
-		struct rtmsg 		r;
-		char   			buf[1024];
-	} req;
-	int rtn = 0;
-
-	memset(&req, 0, sizeof(req));
-
-	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
-	req.n.nlmsg_type = RTM_NEWROUTE;
-	req.n.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE|NLM_F_EXCL;
+    struct {
+    	struct nlmsghdr 	n;
+    	struct rtmsg 		r;
+    	char   			buf[1024];
+    } req;
+    int val, rtn = 0;
+    
+    memset(&req, 0, sizeof(req));
+    
+    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+    req.n.nlmsg_type = RTM_NEWROUTE;
+    req.n.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE|NLM_F_EXCL;
     req.n.nlmsg_pid = 0;
-	req.r.rtm_family = AF_INET6;
-	req.r.rtm_table = RT_TABLE_MAIN;
-	req.r.rtm_protocol = RTPROT_STATIC;
-	req.r.rtm_scope = RT_SCOPE_UNIVERSE; // RT_SCOPE_LINK should work as well.
-	req.r.rtm_type = RTN_UNICAST;
-	req.r.rtm_dst_len = 128;	// this is host only
-	// prefix
-	addattr_l(&req.n, sizeof(req), RTA_DST, ip6, sizeof(*ip6));
-	// dev br-lan
-	addattr_l(&req.n, sizeof(req), RTA_OIF, handle_.if_lan, sizeof(int));
-	// metric - the hardcoded 200 is greater than the default 256 
-	addattr_l(&req.n, sizeof(req), RTA_PRIORITY, 200, sizeof(int));
+    req.r.rtm_family = AF_INET6;
+    req.r.rtm_table = RT_TABLE_MAIN;
+    req.r.rtm_protocol = RTPROT_STATIC;
+    req.r.rtm_scope = RT_SCOPE_UNIVERSE; // RT_SCOPE_LINK should work as well.
+    req.r.rtm_type = RTN_UNICAST;
+    req.r.rtm_dst_len = 128;	// this is host only
+    // prefix
+    addattr_l(&req.n, sizeof(req), RTA_DST, ip6, sizeof(*ip6));
+    // dev br-lan
+    val = handle_.if_lan;
+    addattr_l(&req.n, sizeof(req), RTA_OIF, &val, sizeof(int));
+    // metric - the hardcoded 200 is greater than the default 256 
+    val = 200;
+    addattr_l(&req.n, sizeof(req), RTA_PRIORITY, &val, sizeof(int));
 
     // Netlink talk to kernel
     rtn = rtnl_talk(&req.n, 0);
@@ -193,16 +196,14 @@ int netlink_addroute(struct in6_addr *ip6)
 	return rtn;
 }
 
-int neighor_addproxy(struct in6_addr *ip6)
+int netlink_addproxy(struct in6_addr *ip6)
 {
     struct {
         struct nlmsghdr    n;
         struct ndmsg    ndm;
         char            buf[256];
     } req;
-    struct rtattr *rta;
-	int rtn;
-    int len;
+    int rtn;
     
     memset(&req, 0, sizeof(req));
 
@@ -216,7 +217,7 @@ int neighor_addproxy(struct in6_addr *ip6)
     req.ndm.ndm_flags = NTF_PROXY;
 
     //LOG("PROXY LAN:%d to WAN:%d", rth.if_lan, rth.if_wan);
-	addattr_l(&req.n, sizeof(req), NDA_DST, ip6, sizeof(*ip6));
+    addattr_l(&req.n, sizeof(req), NDA_DST, ip6, sizeof(*ip6));
 
     // Netlink talk to kernel
     rtn = rtnl_talk(&req.n, 0);
@@ -230,7 +231,7 @@ int neighor_addproxy(struct in6_addr *ip6)
 
 int netlink_addclient(struct in6_addr *ip6) 
 {
-	int rtn = neighbor_addproxy(ip6);
+	int rtn = netlink_addproxy(ip6);
 	if (rtn >= 0) {
 		rtn = netlink_addroute(ip6);
 	}
@@ -245,6 +246,7 @@ int open_netlink_socket(struct slaac_handle* rth)
 
     // Interface index
     handle_.if_wan = rth->if_wan;
+    handle_.if_lan = rth->if_lan;
 
     handle_.nlfd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
     if (handle_.nlfd < 0) {
