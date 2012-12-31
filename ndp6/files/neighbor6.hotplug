@@ -1,0 +1,2 @@
+#!/bin/sh
+/etc/init.d/neighbor6 enabled && /etc/init.d/neighbor6 start

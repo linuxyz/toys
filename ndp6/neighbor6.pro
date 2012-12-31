@@ -2,10 +2,10 @@ TEMPLATE = app
 CONFIG += console
 CONFIG -= qt
 
-SOURCES += main.c
-SOURCES += icmp6talk.c
-SOURCES += nltalk.c
+SOURCES += src/main.c
+SOURCES += src/icmp6talk.c
+SOURCES += src/nltalk.c
 SOURCES +=
 
 HEADERS += \
-    slaac6.h
+    src/slaac6.h

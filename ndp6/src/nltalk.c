@@ -138,8 +138,62 @@ static int rtnl_talk(struct nlmsghdr *n, struct nlmsghdr *answer)
 #define NLMSG_TAIL(nmsg) \
     ((struct rtattr *) (((void *) (nmsg)) + RTA_ALIGN((nmsg)->nlmsg_len)))
 
+static int addattr_l(struct nlmsghdr *n, int maxlen, int type, const void *data,
+	      int alen)
+{
+	int len = RTA_LENGTH(alen);
+	struct rtattr *rta;
 
-int neighor_addproxy(struct in6_addr* ip6)
+	if (NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len) > maxlen) {
+		fprintf(stderr, "addattr_l ERROR: message exceeded bound of %d\n",maxlen);
+		return -1;
+	}
+	rta = NLMSG_TAIL(n);
+	rta->rta_type = type;
+	rta->rta_len = len;
+	memcpy(RTA_DATA(rta), data, alen);
+	n->nlmsg_len = NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(len);
+	return 0;
+}
+
+int netlink_addroute(struct in6_addr *ip6)
+{
+	struct {
+		struct nlmsghdr 	n;
+		struct rtmsg 		r;
+		char   			buf[1024];
+	} req;
+	int rtn = 0;
+
+	memset(&req, 0, sizeof(req));
+
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+	req.n.nlmsg_type = RTM_NEWROUTE;
+	req.n.nlmsg_flags = NLM_F_REQUEST|NLM_F_CREATE|NLM_F_EXCL;
+    req.n.nlmsg_pid = 0;
+	req.r.rtm_family = AF_INET6;
+	req.r.rtm_table = RT_TABLE_MAIN;
+	req.r.rtm_protocol = RTPROT_STATIC;
+	req.r.rtm_scope = RT_SCOPE_UNIVERSE; // RT_SCOPE_LINK should work as well.
+	req.r.rtm_type = RTN_UNICAST;
+	req.r.rtm_dst_len = 128;	// this is host only
+	// prefix
+	addattr_l(&req.n, sizeof(req), RTA_DST, ip6, sizeof(*ip6));
+	// dev br-lan
+	addattr_l(&req.n, sizeof(req), RTA_OIF, handle_.if_lan, sizeof(int));
+	// metric - the hardcoded 200 is greater than the default 256 
+	addattr_l(&req.n, sizeof(req), RTA_PRIORITY, 200, sizeof(int));
+
+    // Netlink talk to kernel
+    rtn = rtnl_talk(&req.n, 0);
+    if (rtn < 0)
+        LOG("RTNETLINK: add route - Error!");
+    else 
+    	LOG("RTNETLINK: add route - succeeded!");
+	return rtn;
+}
+
+int neighor_addproxy(struct in6_addr *ip6)
 {
     struct {
         struct nlmsghdr    n;
@@ -147,6 +201,7 @@ int neighor_addproxy(struct in6_addr* ip6)
         char            buf[256];
     } req;
     struct rtattr *rta;
+	int rtn;
     int len;
     
     memset(&req, 0, sizeof(req));
@@ -161,25 +216,26 @@ int neighor_addproxy(struct in6_addr* ip6)
     req.ndm.ndm_flags = NTF_PROXY;
 
     //LOG("PROXY LAN:%d to WAN:%d", rth.if_lan, rth.if_wan);
+	addattr_l(&req.n, sizeof(req), NDA_DST, ip6, sizeof(*ip6));
 
-    // Adope the IPv6 address into the payload
-    len = RTA_LENGTH(16);
-    if (NLMSG_ALIGN(req.n.nlmsg_len) + RTA_ALIGN(len) > sizeof(req)) {
-        LOG("RTNETLINK: message exceeded bound of %u\n", sizeof(req));
-        return -__LINE__;;
-    }
-    rta = NLMSG_TAIL(&(req.n));
-    rta->rta_len = len;
-    rta->rta_type = NDA_DST;
-    memcpy(RTA_DATA(rta), ip6, 16);
-    req.n.nlmsg_len = NLMSG_ALIGN(req.n.nlmsg_len) + RTA_ALIGN(len);
-    
     // Netlink talk to kernel
-    if (rtnl_talk(&req.n, 0) < 0) {
-        LOG("RTNETLINK: Error!");
-    }
-    LOG("NetLink command succeeded!");
-    return 0;
+    rtn = rtnl_talk(&req.n, 0);
+    if (rtn < 0)
+        LOG("RTNETLINK: add proxy - Error!");
+    else 
+    	LOG("RTNETLINK: add proxy - succeeded!");
+
+	return rtn;
+}
+
+int netlink_addclient(struct in6_addr *ip6) 
+{
+	int rtn = neighbor_addproxy(ip6);
+	if (rtn >= 0) {
+		rtn = netlink_addroute(ip6);
+	}
+
+	return rtn;
 }
 
 int open_netlink_socket(struct slaac_handle* rth)

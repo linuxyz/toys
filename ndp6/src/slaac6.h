@@ -44,19 +44,19 @@ struct slaac_handle
 };
 
 // NETLINK related
-int open_netlink_socket(struct slaac_handle* rth);
-int neighor_addproxy(struct in6_addr* ip6);
+int open_netlink_socket(struct slaac_handle *rth);
+int netlink_addclient(struct in6_addr *ip6);
 
 // ICMPv6 related
-int open_icmp_socket(struct slaac_handle* rth);
+int open_icmp_socket(struct slaac_handle *rth);
 
-int process_icmp6_local(struct slaac_handle* rth);
-int process_icmp6_ext(struct slaac_handle* rth);
+int process_icmp6_local(struct slaac_handle *rth);
+int process_icmp6_ext(struct slaac_handle *rth);
 
-int prepare_icmp6_ra(struct slaac_handle* rth);
-int icmp6_ra_broadcast(struct slaac_handle* rth);
+int prepare_icmp6_ra(struct slaac_handle *rth);
+int icmp6_ra_broadcast(struct slaac_handle *rth);
 
-int close_icmp_socket(struct slaac_handle* rth);
+int close_icmp_socket(struct slaac_handle *rth);
 
 //////////////////////////////
 //# vim:ts=4
