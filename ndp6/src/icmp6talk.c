@@ -427,7 +427,12 @@ int process_icmp6_local(struct slaac_handle* rth)
             // It isn't global unicast IPv6
             return len;
         }
-    
+
+		// The solicited Neighbor Advert should not be here
+		if ((unsigned char)(msg[4] & 0x40) != 0)  { // ND_NA_FLAG_SOLICITED  
+    		return len;
+		}
+
         rtn = neighor_addproxy((struct in6_addr*)(msg+8));
         LOG("add neigh proxy return: %d", rtn);
         return rtn;
