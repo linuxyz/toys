@@ -400,7 +400,7 @@ int process_icmp6_local(struct slaac_handle* rth)
     
         DUMP("<--NEIGHBOR_SOLICIT", msg, len);
 
-        rtn = neighor_addproxy((struct in6_addr*)(msg+8));
+        rtn = netlink_addclient((struct in6_addr*)(msg+8));
         LOG("add neigh proxy return: %d", rtn);
         return rtn;
     }
@@ -433,7 +433,7 @@ int process_icmp6_local(struct slaac_handle* rth)
     		return len;
 		}
 
-        rtn = neighor_addproxy((struct in6_addr*)(msg+8));
+        rtn = netlink_addclient((struct in6_addr*)(msg+8));
         LOG("add neigh proxy return: %d", rtn);
         return rtn;
     }
