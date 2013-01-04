@@ -9,12 +9,12 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=neighbor6
 PKG_VERSION:=2012-12-30
-PKG_RELEASE=$(PKG_SOURCE_VERSION)
+PKG_RELEASE=1
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
-PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
-PKG_SOURCE_URL:=git://github.com/linuxyz/neighbor6.git
-PKG_SOURCE_PROTO:=git
+#PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
+#PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+#PKG_SOURCE_URL:=git://github.com/linuxyz/neighbor6.git
+#PKG_SOURCE_PROTO:=git
 #PKG_SOURCE_VERSION:=
 
 PKG_MAINTAINER:=Yi Zhao <zzlinux AT hotmail DOT com>
@@ -53,12 +53,12 @@ define Package/neighbor6/description
 endef
 
 define Package/neighbor6/install
-$(INSTALL_DIR) $(1)/usr/sbin/
-$(INSTALL_BIN) $(PKG_BUILD_DIR)/neighbor6 $(1)/usr/sbin/
-$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
-$(INSTALL_DATA) ./files/neighbor6.hotplug $(1)/etc/hotplug.d/iface/30-neighbor6
-$(INSTALL_DIR) $(1)/etc/init.d
-$(INSTALL_BIN) ./files/neighbor6.init $(1)/etc/init.d/neighbor6
+	$(INSTALL_DIR) $(1)/usr/sbin/
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/neighbor6 $(1)/usr/sbin/
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface
+	$(INSTALL_DATA) ./files/neighbor6.hotplug $(1)/etc/hotplug.d/iface/30-neighbor6
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/neighbor6.init $(1)/etc/init.d/neighbor6
 endef
 
 $(eval $(call BuildPackage,neighbor6))
