@@ -9,6 +9,11 @@
 #define MLD2_MODE_IS_EXCLUDE    2
 #define MLD2_CHANGE_TO_EXCLUDE  4
 
+short _MaxRtrAdvInterval = 600; // seconds
+short _MinRtrAdvInterval = _MaxRtrAdvInterval / 3; // seconds: MUST > 3 && < _MaxRtrAdvInterval * 3 / 4
+short _AdvDefaultLifetime = _MaxRtrAdvInterval * 3; // seconds: MUST < 9000
+int _AdvReachableTime = 0; // milliseconds: MUST < 3,600,000 milliseconds
+int _AdvRetransTimer = 300000; // milliseconds
 
 // Router Advert
 struct ra_msg_t {
@@ -21,7 +26,7 @@ struct ra_msg_t {
         unsigned char   length; // should less than 32
         unsigned short  reserved; // 0
         unsigned int    lifetime; //
-        struct in6_addr servers[3];
+        struct in6_addr servers[1];
     } rdnss;
 };
 
@@ -42,11 +47,11 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     // MESSAGE
     //ra_msg_.hdr.nd_ra_hdr.icmp6_type = ND_ROUTER_ADVERT;
     ra_msg_.hdr.nd_ra_hdr.icmp6_code = 0;
-    ra_msg_.hdr.nd_ra_curhoplimit = 64;
+    ra_msg_.hdr.nd_ra_curhoplimit = 0;
     ra_msg_.hdr.nd_ra_flags_reserved = 0;
-    ra_msg_.hdr.nd_ra_router_lifetime = htons(RA_RETRANS_TIMER*3); //htons(1800);
-    ra_msg_.hdr.nd_ra_reachable =  htonl(30000);
-    ra_msg_.hdr.nd_ra_retransmit = htonl(1000);
+    ra_msg_.hdr.nd_ra_router_lifetime = htons(_AdvDefaultLifetime);
+    ra_msg_.hdr.nd_ra_reachable =  htonl(_AdvReachableTime);
+    ra_msg_.hdr.nd_ra_retransmit = htonl(_AdvRetransTimer);
 
     // option source MAC address
     ra_msg_.src[0] = 1;
@@ -69,12 +74,13 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     ra_msg_.mtu.nd_opt_mtu_mtu = htons(1500);
     // RDNSS
     ra_msg_.rdnss.type = 25;
-    ra_msg_.rdnss.length = 7;
+    ra_msg_.rdnss.length = 3; //  1 + (DNS Servers * 2)
     ra_msg_.rdnss.reserved = 0;
     ra_msg_.rdnss.lifetime = htonl(1500);
-    inet_pton(AF_INET6, "2001:470:20::2", &(ra_msg_.rdnss.servers[0])); //, sizeof(struct in6_addr));
-    inet_pton(AF_INET6, "2001:4860:4860::8888", &(ra_msg_.rdnss.servers[1])); //, sizeof(struct in6_addr));
-    inet_pton(AF_INET6, "2620:0:ccc::2", &(ra_msg_.rdnss.servers[2])); //, sizeof(struct in6_addr));
+	getsockname(rth->icmp6fd, &(ra_msg_.rdnss.servers[0]), sizeof(struct in6_addr)); // Use local IPv6 address
+    //inet_pton(AF_INET6, "2001:470:20::2", &(ra_msg_.rdnss.servers[0])); //, sizeof(struct in6_addr));
+    //inet_pton(AF_INET6, "2001:4860:4860::8888", &(ra_msg_.rdnss.servers[1])); //, sizeof(struct in6_addr));
+    //inet_pton(AF_INET6, "2620:0:ccc::2", &(ra_msg_.rdnss.servers[2])); //, sizeof(struct in6_addr));
 
     // LOCAL ALL NODE
     memset(&ip6_allnodes_, 0, sizeof(ip6_allnodes_));
