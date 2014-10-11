@@ -9,11 +9,13 @@
 #define MLD2_MODE_IS_EXCLUDE    2
 #define MLD2_CHANGE_TO_EXCLUDE  4
 
-short _MaxRtrAdvInterval = 600; // seconds
-short _MinRtrAdvInterval = _MaxRtrAdvInterval / 3; // seconds: MUST > 3 && < _MaxRtrAdvInterval * 3 / 4
-short _AdvDefaultLifetime = _MaxRtrAdvInterval * 3; // seconds: MUST < 9000
-int _AdvReachableTime = 0; // milliseconds: MUST < 3,600,000 milliseconds
-int _AdvRetransTimer = 300000; // milliseconds
+static short _MaxRtrAdvInterval = 600; // seconds
+//static short _MinRtrAdvInterval = _MaxRtrAdvInterval / 3; // seconds: MUST > 3 && < _MaxRtrAdvInterval * 3 / 4
+static short _MinRtrAdvInterval = 200; // seconds: MUST > 3 && < _MaxRtrAdvInterval * 3 / 4
+//static short _AdvDefaultLifetime = _MaxRtrAdvInterval * 3; // seconds: MUST < 9000
+static short _AdvDefaultLifetime = 600; // seconds: MUST < 9000
+static int _AdvReachableTime = 0; // milliseconds: MUST < 3,600,000 milliseconds
+static int _AdvRetransTimer = 300000; // milliseconds
 
 // Router Advert
 struct ra_msg_t {
@@ -36,9 +38,12 @@ static struct ra_msg_t ra_msg_ = {
 
 static struct sockaddr_in6 ip6_allnodes_;
 static struct sockaddr_in6 ip6_allrouters_;
+static struct sockaddr_in6 ip6_lan_;
 
 int prepare_icmp6_ra(struct slaac_handle* rth)
 {
+    socklen_t len = sizeof(ip6_lan_);
+
     if (ra_msg_.hdr.nd_ra_hdr.icmp6_type == ND_ROUTER_ADVERT)
         return 0;
 
@@ -77,7 +82,8 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     ra_msg_.rdnss.length = 3; //  1 + (DNS Servers * 2)
     ra_msg_.rdnss.reserved = 0;
     ra_msg_.rdnss.lifetime = htonl(1500);
-	getsockname(rth->icmp6fd, &(ra_msg_.rdnss.servers[0]), sizeof(struct in6_addr)); // Use local IPv6 address
+    getsockname(rth->icmp6fd, (struct sockaddr*)&ip6_lan_, &len); // Use local IPv6 address
+    memcpy(&(ra_msg_.rdnss.servers[0]), ip6_lan_.sin6_addr.s6_addr, 16); // Use local IPv6 address
     //inet_pton(AF_INET6, "2001:470:20::2", &(ra_msg_.rdnss.servers[0])); //, sizeof(struct in6_addr));
     //inet_pton(AF_INET6, "2001:4860:4860::8888", &(ra_msg_.rdnss.servers[1])); //, sizeof(struct in6_addr));
     //inet_pton(AF_INET6, "2620:0:ccc::2", &(ra_msg_.rdnss.servers[2])); //, sizeof(struct in6_addr));
