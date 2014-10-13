@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=neighbor6
-PKG_VERSION:=2012-12-30
+PKG_VERSION:=2014-10-30
 PKG_RELEASE=1
 
 #PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
@@ -38,10 +38,10 @@ define Package/neighbor6/compile
 endef
 
 define Package/neighbor6
-  SECTION:=ipv6
-  CATEGORY:=IPv6
+  SECTION:=net
+  CATEGORY:=Network
   TITLE:=IPv6 neighborhood helper (RA, Route and NDP-Proxy register)
-  DEPENDS:=+kmod-ipv6
+  DEPENDS:=@IPV6 +kmod-ipv6
 endef
 
 define Package/neighbor6/description
