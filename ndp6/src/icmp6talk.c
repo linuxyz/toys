@@ -84,8 +84,8 @@ int prepare_icmp6_ra(struct slaac_handle* rth)
     ra_msg_.rdnss.lifetime = htonl(1500);
     //getsockname(rth->icmp6fd, (struct sockaddr*)&ip6_lan_, &len); // Use local IPv6 address
     //memcpy(&(ra_msg_.rdnss.servers[0]), ip6_lan_.sin6_addr.s6_addr, 16); // Use local IPv6 address
-    //inet_pton(AF_INET6, "2001:470:20::2", &(ra_msg_.rdnss.servers[0])); //, sizeof(struct in6_addr));
-    inet_pton(AF_INET6, "2001:4860:4860::8888", &(ra_msg_.rdnss.servers[1])); //, sizeof(struct in6_addr));
+    inet_pton(AF_INET6, "2001:4860:4860::8888", &(ra_msg_.rdnss.servers[0])); //, sizeof(struct in6_addr));
+    //inet_pton(AF_INET6, "2001:470:20::2", &(ra_msg_.rdnss.servers[1])); //, sizeof(struct in6_addr));
     //inet_pton(AF_INET6, "2620:0:ccc::2", &(ra_msg_.rdnss.servers[2])); //, sizeof(struct in6_addr));
 
     // LOCAL ALL NODE
