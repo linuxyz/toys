@@ -1,16 +1,19 @@
-# My Toys made for FUN
+# Toys for fun!
 
-## vimfiles/javascript.vim - JavaScript syntax highlight for VIM
-http://www.vim.org/scripts/script.php?script_id=1491 since 2006. 
+## vimfiles/javascript.vim
+[JavaScript syntax highlight](http://www.vim.org/scripts/script.php?script_id=1491) for VIM since 2006.
 
-## tunet - Tsinghua University Campuss Network authentication client for Linux/OpenWRT
-Works at 200x; current status unknown.
+## tunet
+Tsinghua University Campuss Network authentication client for Linux/OpenWRT
 
-## ndp6 - IPv6 ICMPv6 RA forward and neighbor Proxy for OpenWRT wifi router
-FYI - odhcpd could do it in a better way with proper configuration.
+## ndp6 
+IPv6 ICMPv6 RA forward and neighbor Proxy for OpenWRT wifi router. 
+OpenWRT built-in package [odhcpd](https://github.com/openwrt/odhcpd) could do it better if it was configured properly.
 
-## bing - scripts to download the daily wallpaper from Bing.com
+## bing 
+The scripts to download the daily wallpaper from [Bing.com](https://www.bing.com)
 Who doesn't love beautiful photos?
 
-## vxlan - scripts help to setup VXLAN interfaces before slave and master.
-VXLAN is powerful!
+## vxlan
+Bash scripts used to setup VXLAN interfaces before slave and master.
+VXLAN is powerful support both IPv4 and IPv6.

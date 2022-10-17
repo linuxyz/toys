@@ -16,9 +16,10 @@ TABLE_ID=$((VLAN_ID+80))
 
 [[ -z "$REMOTE_IP" ]] && echo "Error: remote.put.ip4 not specified!" && exit 253
 
-## FOU6
-ip link del $TUN_DEV
-ip link add $TUN_DEV type vxlan id $TABLE_ID remote $REMOTE_IP ttl 64 dstport $REMOTE_PORT
+## Assume we only need to change the remote IPv4 address, no others
+ip link set $TUN_DEV type vxlan id $TABLE_ID remote $REMOTE_IP && exit
+ip link del $TUN_DEV &>/dev/null
+ip link add $TUN_DEV type vxlan id $TABLE_ID remote $REMOTE_IP ttl 64 dstport $REMOTE_PORT 
 
 sysctl -w net.ipv6.conf.$TUN_DEV.disable_ipv6=1
 sysctl -w net.ipv4.conf.$TUN_DEV.rp_filter=2

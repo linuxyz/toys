@@ -19,8 +19,9 @@ TABLE_ID=$((VLAN_ID+80))
 
 [[ -z "$REMOTE_IP6" ]] && echo "Error: remote.pub.ip6 not specified!" && exit 253
 
-## VxLAN
-ip link del $TUN_DEV
+## Assume we only need to change the remote IPv6 address, no others
+ip -6 link set $TUN_DEV type vxlan id $TABLE_ID remote $REMOTE_IP6 && exit
+ip link del $TUN_DEV &>/dev/null
 ip -6 link add $TUN_DEV type vxlan id $TABLE_ID remote $REMOTE_IP6 ttl 64 dstport $REMOTE_PORT
 
 sysctl -w net.ipv6.conf.$TUN_DEV.disable_ipv6=1
